@@ -231,6 +231,7 @@ export function App() {
   const [voiceDiagnostics, setVoiceDiagnostics] = useState<VoiceDiagnosticEntry[]>([]);
   const [voiceVolumes, setVoiceVolumes] = useState(loadVoiceVolumes);
   const [locallyMutedVoiceUsers, setLocallyMutedVoiceUsers] = useState(loadLocalVoiceMutes);
+  const sessionRef = useRef<Session | null>(null);
   const voiceRoomRef = useRef<Room | null>(null);
   const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
   const voiceJoinedAtRef = useRef<string | null>(null);
@@ -244,6 +245,9 @@ export function App() {
   const voiceSharingRef = useRef(false);
   const voiceDiagnosticsRef = useRef<VoiceDiagnosticEntry[]>([]);
   const voiceDiagnosticCounterRef = useRef(0);
+  const voiceParticipantsSignatureRef = useRef("");
+  const voiceVolumesRef = useRef<Record<string, number>>({});
+  const locallyMutedVoiceUsersRef = useRef<string[]>([]);
   const activeChannel = useMemo(() => {
     if (!session) {
       return null;
@@ -329,6 +333,10 @@ export function App() {
   }, [locallyMutedVoiceUsers]);
 
   useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
+
+  useEffect(() => {
     voiceMutedRef.current = voiceMuted;
   }, [voiceMuted]);
 
@@ -343,6 +351,14 @@ export function App() {
   useEffect(() => {
     voiceServerStateRef.current = voiceServerState;
   }, [voiceServerState]);
+
+  useEffect(() => {
+    voiceVolumesRef.current = voiceVolumes;
+  }, [voiceVolumes]);
+
+  useEffect(() => {
+    locallyMutedVoiceUsersRef.current = locallyMutedVoiceUsers;
+  }, [locallyMutedVoiceUsers]);
 
   const appendVoiceDiagnostic = useCallback((event: string, details?: unknown) => {
     const entry: VoiceDiagnosticEntry = {
@@ -584,26 +600,29 @@ export function App() {
 
   const syncVoiceParticipants = useCallback(
     (room: Room | null) => {
-      if (!session) {
+      const currentSession = sessionRef.current;
+      const currentServerState = voiceServerStateRef.current;
+
+      if (!currentSession) {
         setVoiceParticipants([]);
         return;
       }
 
-      const participantStates = [...voiceServerState.participants];
+      const participantStates = [...currentServerState.participants];
 
       if (
         room &&
-        !participantStates.some((participantState) => participantState.userId === session.user.id)
+        !participantStates.some((participantState) => participantState.userId === currentSession.user.id)
       ) {
         const now = new Date().toISOString();
 
         participantStates.push({
-          userId: session.user.id,
-          selfMuted: voiceMuted,
-          selfDeafened: voiceDeafened,
+          userId: currentSession.user.id,
+          selfMuted: voiceMutedRef.current,
+          selfDeafened: voiceDeafenedRef.current,
           serverMuted: false,
           serverDeafened: false,
-          screenSharing: voiceSharing,
+          screenSharing: voiceSharingRef.current,
           reconnecting: true,
           joinedAt: voiceJoinedAtRef.current ?? now,
           updatedAt: now
@@ -612,48 +631,65 @@ export function App() {
 
       participantStates.sort((a, b) => Date.parse(a.joinedAt) - Date.parse(b.joinedAt));
 
-      setVoiceParticipants(
-        participantStates.map((participantState) => {
-          const liveParticipant = room ? getLiveKitParticipant(room, participantState.userId) : null;
-          const profile =
-            session.user.id === participantState.userId
-              ? session.user
-              : session.members.find((member) => member.id === participantState.userId) ?? null;
-          const liveMuted = liveParticipant ? isParticipantAudioMuted(liveParticipant) : participantState.selfMuted;
-          const liveScreenSharing = liveParticipant ? isParticipantScreenSharing(liveParticipant) : false;
-          const locallyMuted = locallyMutedVoiceUsers.includes(participantState.userId);
+      const nextParticipants = participantStates.map((participantState) => {
+        const liveParticipant = room ? getLiveKitParticipant(room, participantState.userId) : null;
+        const profile =
+          currentSession.user.id === participantState.userId
+            ? currentSession.user
+            : currentSession.members.find((member) => member.id === participantState.userId) ?? null;
+        const liveMuted = liveParticipant ? isParticipantAudioMuted(liveParticipant) : participantState.selfMuted;
+        const liveScreenSharing = liveParticipant ? isParticipantScreenSharing(liveParticipant) : false;
+        const locallyMuted = locallyMutedVoiceUsersRef.current.includes(participantState.userId);
 
-          return {
-            userId: participantState.userId,
-            name: profile?.displayName ?? liveParticipant?.name ?? participantState.userId,
-            isLocal: participantState.userId === session.user.id,
-            isMuted:
-              participantState.serverMuted ||
-              participantState.serverDeafened ||
-              participantState.selfDeafened ||
-              liveMuted,
-            isDeafened: participantState.selfDeafened || participantState.serverDeafened,
-            isServerMuted: participantState.serverMuted,
-            isServerDeafened: participantState.serverDeafened,
-            isSpeaking: liveParticipant?.isSpeaking ?? false,
-            isScreenSharing: participantState.screenSharing || liveScreenSharing,
-            reconnecting: participantState.reconnecting,
-            profile,
-            volume: voiceVolumes[participantState.userId] ?? 100,
-            locallyMuted
-          };
-        })
-      );
+        return {
+          userId: participantState.userId,
+          name: profile?.displayName ?? liveParticipant?.name ?? participantState.userId,
+          isLocal: participantState.userId === currentSession.user.id,
+          isMuted:
+            participantState.serverMuted ||
+            participantState.serverDeafened ||
+            participantState.selfDeafened ||
+            liveMuted,
+          isDeafened: participantState.selfDeafened || participantState.serverDeafened,
+          isServerMuted: participantState.serverMuted,
+          isServerDeafened: participantState.serverDeafened,
+          isSpeaking: liveParticipant?.isSpeaking ?? false,
+          isScreenSharing: participantState.screenSharing || liveScreenSharing,
+          reconnecting: participantState.reconnecting,
+          profile,
+          volume: voiceVolumesRef.current[participantState.userId] ?? 100,
+          locallyMuted
+        };
+      });
+
+      setVoiceParticipants(nextParticipants);
+
+      const signature = nextParticipants
+        .map((participant) =>
+          [
+            participant.userId,
+            participant.isMuted ? "m" : "u",
+            participant.isDeafened ? "d" : "h",
+            participant.isScreenSharing ? "s" : "n",
+            participant.reconnecting ? "r" : "c",
+            participant.isSpeaking ? "talking" : "silent"
+          ].join(":")
+        )
+        .join("|");
+
+      if (signature !== voiceParticipantsSignatureRef.current) {
+        voiceParticipantsSignatureRef.current = signature;
+        appendVoiceDiagnostic("ui:voice-participants-synced", {
+          count: nextParticipants.length,
+          participantIds: nextParticipants.map((participant) => participant.userId),
+          liveKitIds: room
+            ? [room.localParticipant.identity, ...Array.from(room.remoteParticipants.keys())]
+            : [],
+          serverState: describeVoiceState(currentServerState, currentSession.user.id)
+        });
+      }
     },
-    [
-      locallyMutedVoiceUsers,
-      session,
-      voiceDeafened,
-      voiceMuted,
-      voiceServerState.participants,
-      voiceSharing,
-      voiceVolumes
-    ]
+    [appendVoiceDiagnostic]
   );
 
   const disconnectVoice = useCallback((notifyServer = true) => {
