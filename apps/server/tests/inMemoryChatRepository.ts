@@ -5,8 +5,10 @@ import {
   type BootstrapPayload,
   type CalendarEventView,
   type ChannelSummary,
+  type CustomEmojiView,
   type CreateChannelRequest,
   type CreateCalendarEventRequest,
+  type CreateCustomEmojiRequest,
   type CreateMessageRequest,
   type DeleteChannelRequest,
   type MessageView,
@@ -14,6 +16,7 @@ import {
   type ServerMemberView,
   type ServerSummary,
   type UpdateAccountRequest,
+  type UpdateCustomEmojiRequest,
   type UpdateUserBanRequest,
   type UpdateProfileRequest,
   type UpdateUserRoleRequest,
@@ -75,6 +78,16 @@ interface StoredCalendarEvent {
   optInUserIds: Set<string>;
 }
 
+interface StoredCustomEmoji {
+  id: string;
+  name: string;
+  imageUrl: string;
+  createdById: string;
+  useCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export class InMemoryChatRepository implements ChatRepository {
   private readonly server: ServerSummary = {
     id: "server-global",
@@ -93,6 +106,7 @@ export class InMemoryChatRepository implements ChatRepository {
   private readonly memberships: StoredMembership[] = [];
   private readonly messages: StoredMessage[] = [];
   private readonly calendarEvents: StoredCalendarEvent[] = [];
+  private readonly customEmojis: StoredCustomEmoji[] = [];
 
   public async ensureGlobalCommunity(): Promise<GlobalCommunity> {
     return { server: this.server, channel: this.channels[0] };
@@ -361,6 +375,12 @@ export class InMemoryChatRepository implements ChatRepository {
     };
 
     this.messages.push(message);
+    const counts = countByName(extractCustomEmojiNames(message.content));
+
+    for (const emoji of this.customEmojis) {
+      emoji.useCount += counts.get(emoji.name) ?? 0;
+    }
+
     return this.mapMessage(message);
   }
 
@@ -406,6 +426,86 @@ export class InMemoryChatRepository implements ChatRepository {
     }
 
     return this.mapCalendarEvent(event, userId);
+  }
+
+  public async listCustomEmojis(): Promise<CustomEmojiView[]> {
+    return this.customEmojis
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((emoji) => this.mapCustomEmoji(emoji));
+  }
+
+  public async createCustomEmoji(
+    input: { actorId: string } & CreateCustomEmojiRequest
+  ): Promise<CustomEmojiView> {
+    await this.assertAdmin(input.actorId);
+    const name = normalizeCustomEmojiName(input.name);
+
+    if (!name) {
+      throw new HttpError(400, "Emoji name is required");
+    }
+
+    if (this.customEmojis.some((emoji) => emoji.name === name)) {
+      throw new HttpError(409, "An emoji with that name already exists");
+    }
+
+    const emoji: StoredCustomEmoji = {
+      id: randomUUID(),
+      name,
+      imageUrl: input.imageUrl,
+      createdById: input.actorId,
+      useCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    this.customEmojis.push(emoji);
+    return this.mapCustomEmoji(emoji);
+  }
+
+  public async updateCustomEmoji(
+    emojiId: string,
+    input: { actorId: string } & UpdateCustomEmojiRequest
+  ): Promise<CustomEmojiView> {
+    await this.assertAdmin(input.actorId);
+    const emoji = this.customEmojis.find((candidate) => candidate.id === emojiId);
+
+    if (!emoji) {
+      throw new HttpError(404, "Emoji not found");
+    }
+
+    if (input.name) {
+      const name = normalizeCustomEmojiName(input.name);
+
+      if (!name) {
+        throw new HttpError(400, "Emoji name is required");
+      }
+
+      if (this.customEmojis.some((candidate) => candidate.name === name && candidate.id !== emojiId)) {
+        throw new HttpError(409, "An emoji with that name already exists");
+      }
+
+      emoji.name = name;
+    }
+
+    if (input.imageUrl) {
+      emoji.imageUrl = input.imageUrl;
+    }
+
+    emoji.updatedAt = new Date();
+    return this.mapCustomEmoji(emoji);
+  }
+
+  public async deleteCustomEmoji(emojiId: string, input: { actorId: string }): Promise<CustomEmojiView[]> {
+    await this.assertAdmin(input.actorId);
+    const index = this.customEmojis.findIndex((candidate) => candidate.id === emojiId);
+
+    if (index < 0) {
+      throw new HttpError(404, "Emoji not found");
+    }
+
+    this.customEmojis.splice(index, 1);
+    return this.listCustomEmojis();
   }
 
   private ensureMembership(userId: string) {
@@ -477,6 +577,24 @@ export class InMemoryChatRepository implements ChatRepository {
     };
   }
 
+  private mapCustomEmoji(emoji: StoredCustomEmoji): CustomEmojiView {
+    const creator = this.users.get(emoji.createdById);
+
+    if (!creator) {
+      throw new Error("Missing emoji creator");
+    }
+
+    return {
+      id: emoji.id,
+      name: emoji.name,
+      imageUrl: emoji.imageUrl,
+      useCount: emoji.useCount,
+      createdAt: emoji.createdAt.toISOString(),
+      updatedAt: emoji.updatedAt.toISOString(),
+      createdBy: this.mapUser(creator)
+    };
+  }
+
   private async assertAdmin(userId: string) {
     const user = this.users.get(userId);
 
@@ -501,4 +619,29 @@ function normalizeChannelName(name: string) {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 32);
+}
+
+function normalizeCustomEmojiName(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
+}
+
+function extractCustomEmojiNames(content: string) {
+  return [...content.matchAll(/:([a-z0-9_]{2,32}):/gi)]
+    .map((match) => match[1]?.toLowerCase())
+    .filter((name): name is string => Boolean(name));
+}
+
+function countByName(names: string[]) {
+  const counts = new Map<string, number>();
+
+  for (const name of names) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
+  return counts;
 }

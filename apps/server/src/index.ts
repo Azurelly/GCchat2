@@ -16,7 +16,8 @@ const realtime: RealtimePublisher = {
   emitMembersUpdated: () => undefined,
   emitChannelsUpdated: () => undefined,
   emitSessionBanned: () => undefined,
-  emitCalendarEvent: () => undefined
+  emitCalendarEvent: () => undefined,
+  emitEmojisUpdated: () => undefined
 };
 
 const app = createApp({ env, repo, storage, realtime });

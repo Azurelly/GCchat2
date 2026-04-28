@@ -2,8 +2,10 @@ import type {
   BootstrapPayload,
   CalendarEventView,
   ChannelSummary,
+  CustomEmojiView,
   CreateChannelRequest,
   CreateCalendarEventRequest,
+  CreateCustomEmojiRequest,
   CreateMessageRequest,
   DeleteChannelRequest,
   MessageView,
@@ -11,6 +13,7 @@ import type {
   ServerMemberView,
   ServerSummary,
   UpdateAccountRequest,
+  UpdateCustomEmojiRequest,
   UpdateUserBanRequest,
   UpdateProfileRequest,
   UpdateUserRoleRequest,
@@ -73,4 +76,13 @@ export interface ChatRepository {
     eventId: string,
     input: SetCalendarEventOptInRequest
   ): Promise<CalendarEventView>;
+  listCustomEmojis(): Promise<CustomEmojiView[]>;
+  createCustomEmoji(
+    input: { actorId: string } & CreateCustomEmojiRequest
+  ): Promise<CustomEmojiView>;
+  updateCustomEmoji(
+    emojiId: string,
+    input: { actorId: string } & UpdateCustomEmojiRequest
+  ): Promise<CustomEmojiView>;
+  deleteCustomEmoji(emojiId: string, input: { actorId: string }): Promise<CustomEmojiView[]>;
 }

@@ -97,3 +97,24 @@ export const setCalendarEventOptInSchema = z
     optedIn: z.boolean()
   })
   .strict();
+
+const customEmojiNameSchema = z
+  .string()
+  .trim()
+  .min(2, "Emoji name must be at least 2 characters.")
+  .max(32, "Emoji name must be 32 characters or fewer.")
+  .regex(/^[a-z0-9_]+$/i, "Emoji names can use letters, numbers, and underscores.");
+
+export const createCustomEmojiSchema = z
+  .object({
+    name: customEmojiNameSchema,
+    imageUrl: z.string().url()
+  })
+  .strict();
+
+export const updateCustomEmojiSchema = z
+  .object({
+    name: customEmojiNameSchema.optional(),
+    imageUrl: z.string().url().optional()
+  })
+  .strict();

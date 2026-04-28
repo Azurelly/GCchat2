@@ -6,8 +6,10 @@ import {
   type BootstrapPayload,
   type CalendarEventView,
   type ChannelSummary,
+  type CustomEmojiView,
   type CreateChannelRequest,
   type CreateCalendarEventRequest,
+  type CreateCustomEmojiRequest,
   type CreateMessageRequest,
   type DeleteChannelRequest,
   type MessageView,
@@ -15,6 +17,7 @@ import {
   type ServerMemberView,
   type ServerSummary,
   type UpdateAccountRequest,
+  type UpdateCustomEmojiRequest,
   type UpdateUserBanRequest,
   type UpdateProfileRequest,
   type UpdateUserRoleRequest,
@@ -60,6 +63,16 @@ type CalendarEventWithRelations = {
   }>;
 };
 
+type CustomEmojiWithRelations = {
+  id: string;
+  name: string;
+  imageUrl: string;
+  useCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: UserWithProfile;
+};
+
 const GLOBAL_SERVER_KEY = "global";
 
 const calendarEventInclude = {
@@ -68,6 +81,10 @@ const calendarEventInclude = {
     include: { user: { include: { profile: true } } },
     orderBy: { createdAt: "asc" as const }
   }
+};
+
+const customEmojiInclude = {
+  createdBy: { include: { profile: true } }
 };
 
 export class PrismaChatRepository implements ChatRepository {
@@ -410,6 +427,8 @@ export class PrismaChatRepository implements ChatRepository {
   public async createMessage(
     input: { channelId: string; authorId: string } & CreateMessageRequest
   ) {
+    const emojiNames = extractCustomEmojiNames(input.content);
+
     const message = await this.prisma.message.create({
       data: {
         channelId: input.channelId,
@@ -429,6 +448,18 @@ export class PrismaChatRepository implements ChatRepository {
         attachments: { orderBy: { createdAt: "asc" } }
       }
     });
+
+    if (emojiNames.length > 0) {
+      const counts = countByName(emojiNames);
+      await this.prisma.$transaction(
+        [...counts.entries()].map(([name, count]) =>
+          this.prisma.customEmoji.updateMany({
+            where: { name },
+            data: { useCount: { increment: count } }
+          })
+        )
+      );
+    }
 
     return mapMessage(message);
   }
@@ -495,6 +526,93 @@ export class PrismaChatRepository implements ChatRepository {
     }
 
     return mapCalendarEvent(updated, userId);
+  }
+
+  public async listCustomEmojis(): Promise<CustomEmojiView[]> {
+    const emojis = await this.prisma.customEmoji.findMany({
+      include: customEmojiInclude,
+      orderBy: [{ name: "asc" }]
+    });
+
+    return emojis.map(mapCustomEmoji);
+  }
+
+  public async createCustomEmoji(
+    input: { actorId: string } & CreateCustomEmojiRequest
+  ): Promise<CustomEmojiView> {
+    await this.assertAdmin(input.actorId);
+    const name = normalizeCustomEmojiName(input.name);
+
+    if (!name) {
+      throw new HttpError(400, "Emoji name is required");
+    }
+
+    const existing = await this.prisma.customEmoji.findUnique({
+      where: { name },
+      select: { id: true }
+    });
+
+    if (existing) {
+      throw new HttpError(409, "An emoji with that name already exists");
+    }
+
+    const emoji = await this.prisma.customEmoji.create({
+      data: {
+        name,
+        imageUrl: input.imageUrl,
+        createdById: input.actorId
+      },
+      include: customEmojiInclude
+    });
+
+    return mapCustomEmoji(emoji);
+  }
+
+  public async updateCustomEmoji(
+    emojiId: string,
+    input: { actorId: string } & UpdateCustomEmojiRequest
+  ): Promise<CustomEmojiView> {
+    await this.assertAdmin(input.actorId);
+
+    const data: { name?: string; imageUrl?: string } = {};
+
+    if (input.name) {
+      const name = normalizeCustomEmojiName(input.name);
+
+      if (!name) {
+        throw new HttpError(400, "Emoji name is required");
+      }
+
+      const existing = await this.prisma.customEmoji.findUnique({
+        where: { name },
+        select: { id: true }
+      });
+
+      if (existing && existing.id !== emojiId) {
+        throw new HttpError(409, "An emoji with that name already exists");
+      }
+
+      data.name = name;
+    }
+
+    if (input.imageUrl) {
+      data.imageUrl = input.imageUrl;
+    }
+
+    const emoji = await this.prisma.customEmoji.update({
+      where: { id: emojiId },
+      data,
+      include: customEmojiInclude
+    });
+
+    return mapCustomEmoji(emoji);
+  }
+
+  public async deleteCustomEmoji(emojiId: string, input: { actorId: string }): Promise<CustomEmojiView[]> {
+    await this.assertAdmin(input.actorId);
+
+    await this.prisma.customEmoji.delete({ where: { id: emojiId } });
+    return this.listCustomEmojis();
   }
 
   private async assertAdmin(userId: string) {
@@ -592,4 +710,41 @@ function mapCalendarEvent(
     })),
     viewerOptedIn: event.optIns.some((optIn) => optIn.user.id === viewerId)
   };
+}
+
+function mapCustomEmoji(emoji: CustomEmojiWithRelations): CustomEmojiView {
+  return {
+    id: emoji.id,
+    name: emoji.name,
+    imageUrl: emoji.imageUrl,
+    useCount: emoji.useCount,
+    createdAt: emoji.createdAt.toISOString(),
+    updatedAt: emoji.updatedAt.toISOString(),
+    createdBy: mapUserProfile(emoji.createdBy)
+  };
+}
+
+function normalizeCustomEmojiName(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
+}
+
+function extractCustomEmojiNames(content: string) {
+  return [...content.matchAll(/:([a-z0-9_]{2,32}):/gi)]
+    .map((match) => match[1]?.toLowerCase())
+    .filter((name): name is string => Boolean(name));
+}
+
+function countByName(names: string[]) {
+  const counts = new Map<string, number>();
+
+  for (const name of names) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
+  return counts;
 }

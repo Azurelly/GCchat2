@@ -3,6 +3,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import multer from "multer";
 import type {
   ChannelSummary,
+  CustomEmojiView,
   CalendarEventView,
   MessageView,
   ServerMemberView,
@@ -25,12 +26,14 @@ import type { AssetStorage } from "./storage";
 import {
   createCalendarEventSchema,
   createChannelSchema,
+  createCustomEmojiSchema,
   createMessageSchema,
   deleteChannelSchema,
   loginSchema,
   registerSchema,
   setCalendarEventOptInSchema,
   updateAccountSchema,
+  updateCustomEmojiSchema,
   updateUserBanSchema,
   updateProfileSchema,
   updateUserRoleSchema
@@ -43,6 +46,7 @@ export interface RealtimePublisher {
   emitChannelsUpdated(serverId: string, channels: ChannelSummary[]): void;
   emitSessionBanned(userId: string): void;
   emitCalendarEvent(event: CalendarEventView): void;
+  emitEmojisUpdated(emojis: CustomEmojiView[]): void;
 }
 
 export interface AppDependencies {
@@ -313,6 +317,9 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
       });
 
       realtime?.emitMessage(message);
+      if (hasCustomEmojiToken(parsed.content)) {
+        realtime?.emitEmojisUpdated(await repo.listCustomEmojis());
+      }
       res.status(201).json(message);
     })
   );
@@ -352,6 +359,58 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
 
       realtime?.emitCalendarEvent(event);
       res.json(event);
+    })
+  );
+
+  app.get(
+    "/emojis",
+    asyncRoute(async (_req, res) => {
+      res.json(await repo.listCustomEmojis());
+    })
+  );
+
+  app.post(
+    "/emojis",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const parsed = createCustomEmojiSchema.parse(req.body);
+      const emoji = await repo.createCustomEmoji({
+        actorId: user.id,
+        name: parsed.name,
+        imageUrl: parsed.imageUrl
+      });
+
+      realtime?.emitEmojisUpdated(await repo.listCustomEmojis());
+      res.status(201).json(emoji);
+    })
+  );
+
+  app.patch(
+    "/emojis/:id",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const emojiId = requiredParam(req, "id");
+      const parsed = updateCustomEmojiSchema.parse(req.body);
+      const emoji = await repo.updateCustomEmoji(emojiId, {
+        actorId: user.id,
+        name: parsed.name,
+        imageUrl: parsed.imageUrl
+      });
+
+      realtime?.emitEmojisUpdated(await repo.listCustomEmojis());
+      res.json(emoji);
+    })
+  );
+
+  app.delete(
+    "/emojis/:id",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const emojiId = requiredParam(req, "id");
+      const emojis = await repo.deleteCustomEmoji(emojiId, { actorId: user.id });
+
+      realtime?.emitEmojisUpdated(emojis);
+      res.json(emojis);
     })
   );
 
@@ -453,9 +512,13 @@ function createCorsOrigin(clientOrigin: string) {
 }
 
 function parseUploadKind(kind: unknown): UploadKind {
-  if (kind === "avatar" || kind === "attachment") {
+  if (kind === "avatar" || kind === "attachment" || kind === "emoji") {
     return kind;
   }
 
-  throw new HttpError(400, "Upload kind must be avatar or attachment");
+  throw new HttpError(400, "Upload kind must be avatar, attachment, or emoji");
+}
+
+function hasCustomEmojiToken(content: string) {
+  return /:[a-z0-9_]{2,32}:/i.test(content);
 }

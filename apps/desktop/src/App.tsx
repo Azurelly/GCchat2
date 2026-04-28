@@ -19,6 +19,7 @@ import {
   Download,
   FileUp,
   Hash,
+  ImageUp,
   KeyRound,
   Link,
   Loader2,
@@ -28,11 +29,15 @@ import {
   Plus,
   Palette,
   Paperclip,
+  Pencil,
   RefreshCw,
+  Search,
   Send,
   Settings,
   Shield,
   ShieldCheck,
+  Smile,
+  SmilePlus,
   Sparkles,
   Trash2,
   Upload,
@@ -47,6 +52,7 @@ import type {
   BootstrapPayload,
   CalendarEventView,
   ChannelSummary,
+  CustomEmojiView,
   CreateMessageRequest,
   MessageView,
   ServerMemberView,
@@ -62,10 +68,44 @@ const notificationStorageKey = "gcchat.notification-preferences";
 const appearanceStorageKey = "gcchat.appearance-preferences";
 const eventTokenPattern = /\[\[gc-event:([^\]]+)]]/g;
 
+const defaultEmojis = [
+  { name: "grinning", emoji: "😀" },
+  { name: "joy", emoji: "😂" },
+  { name: "sob", emoji: "😭" },
+  { name: "skull", emoji: "💀" },
+  { name: "fire", emoji: "🔥" },
+  { name: "heart", emoji: "❤️" },
+  { name: "thumbs_up", emoji: "👍" },
+  { name: "eyes", emoji: "👀" },
+  { name: "pray", emoji: "🙏" },
+  { name: "party", emoji: "🎉" },
+  { name: "cool", emoji: "😎" },
+  { name: "thinking", emoji: "🤔" },
+  { name: "flushed", emoji: "😳" },
+  { name: "triumph", emoji: "😤" },
+  { name: "celebrate", emoji: "🥳" },
+  { name: "salute", emoji: "🫡" },
+  { name: "handshake", emoji: "🤝" },
+  { name: "check", emoji: "✅" },
+  { name: "x", emoji: "❌" },
+  { name: "hundred", emoji: "💯" },
+  { name: "pizza", emoji: "🍕" },
+  { name: "burger", emoji: "🍔" },
+  { name: "car", emoji: "🚗" },
+  { name: "controller", emoji: "🎮" },
+  { name: "calendar", emoji: "📅" },
+  { name: "star", emoji: "⭐" },
+  { name: "smiling_devil", emoji: "😈" },
+  { name: "suspicious", emoji: "🤨" },
+  { name: "teary_smile", emoji: "🥲" },
+  { name: "moai", emoji: "🗿" }
+];
+
 type ChatSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
-type ActiveFeature = "chat" | "calendar";
+type ActiveFeature = "chat" | "calendar" | "emojis";
 type ThemeName = "dark" | "light" | "midnight" | "forest" | "berry";
 type NotificationSound = "ping" | "chime" | "alert" | "none";
+type DefaultEmoji = (typeof defaultEmojis)[number];
 
 interface NotificationPreferences {
   mentionToasts: boolean;
@@ -91,6 +131,7 @@ export function App() {
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [messagesByChannel, setMessagesByChannel] = useState<Record<string, MessageView[]>>({});
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
+  const [customEmojis, setCustomEmojis] = useState<CustomEmojiView[]>([]);
   const [calendarFocusEventId, setCalendarFocusEventId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [banned, setBanned] = useState(false);
@@ -118,6 +159,12 @@ export function App() {
     );
   }, [activeChannelId, session]);
   const messages = activeChannel ? messagesByChannel[activeChannel.id] ?? [] : [];
+
+  useEffect(() => {
+    if (session && activeFeature === "emojis" && !hasAtLeastRole(session.user.role, "ADMIN")) {
+      setActiveFeature("chat");
+    }
+  }, [activeFeature, session]);
 
   useEffect(() => {
     const token = localStorage.getItem(tokenStorageKey);
@@ -169,6 +216,7 @@ export function App() {
     setSession(null);
     setMessagesByChannel({});
     setCalendarEvents([]);
+    setCustomEmojis([]);
     setSelectedProfile(null);
     setSettingsOpen(false);
   };
@@ -179,6 +227,7 @@ export function App() {
       socketRef.current = null;
       setMessagesByChannel({});
       setCalendarEvents([]);
+      setCustomEmojis([]);
       return;
     }
 
@@ -190,6 +239,15 @@ export function App() {
       .then((events) => {
         if (active) {
           setCalendarEvents(events);
+        }
+      })
+      .catch((requestError) => setError(getMessage(requestError)));
+
+    api
+      .getCustomEmojis()
+      .then((emojis) => {
+        if (active) {
+          setCustomEmojis(emojis);
         }
       })
       .catch((requestError) => setError(getMessage(requestError)));
@@ -257,6 +315,8 @@ export function App() {
       });
     });
 
+    socket.on("emojis:updated", setCustomEmojis);
+
     socket.on("connect_error", (socketError) => setError(socketError.message));
     socketRef.current = socket;
 
@@ -312,6 +372,7 @@ export function App() {
     setSession(null);
     setActiveChannelId(null);
     setMessagesByChannel({});
+    setCustomEmojis([]);
     setBanned(false);
     setSelectedProfile(null);
     setSettingsOpen(false);
@@ -381,6 +442,10 @@ export function App() {
     setActiveFeature("calendar");
   };
 
+  const handleCustomEmojisChanged = (emojis: CustomEmojiView[]) => {
+    setCustomEmojis(emojis);
+  };
+
   if (loading) {
     return (
       <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
@@ -408,10 +473,11 @@ export function App() {
   }
 
   const currentChannel = activeChannel ?? session.channel;
+  const canManageEmojis = hasAtLeastRole(session.user.role, "ADMIN");
 
   return (
     <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
-    <div className={`app-shell ${activeFeature === "chat" ? "chat-shell" : "calendar-shell"}`}>
+    <div className={`app-shell ${activeFeature}-shell`}>
       <aside className="server-rail">
         <button
           className={`server-pill ${activeFeature === "chat" ? "active" : ""}`}
@@ -429,6 +495,16 @@ export function App() {
         >
           <CalendarDays size={24} />
         </button>
+        {canManageEmojis ? (
+          <button
+            className={`server-pill ${activeFeature === "emojis" ? "active" : ""}`}
+            onClick={() => setActiveFeature("emojis")}
+            aria-label="Emoji studio"
+            title="Emoji studio"
+          >
+            <SmilePlus size={24} />
+          </button>
+        ) : null}
       </aside>
 
       {activeFeature === "chat" ? (
@@ -467,6 +543,8 @@ export function App() {
             messages={messages}
             members={session.members}
             calendarEvents={calendarEvents}
+            customEmojis={customEmojis}
+            currentUser={session.user}
             onProfile={setSelectedProfile}
             onEventUpdated={handleCalendarEventUpdated}
             onOpenCalendarEvent={handleOpenCalendarEvent}
@@ -477,13 +555,14 @@ export function App() {
             currentUser={session.user}
             members={session.members}
             calendarEvents={calendarEvents}
+            customEmojis={customEmojis}
             socket={socketRef.current}
             onError={setError}
             onOptimisticMessage={handleOptimisticMessage}
             onConfirmedMessage={handleConfirmedMessage}
           />
         </main>
-      ) : (
+      ) : activeFeature === "calendar" ? (
         <CalendarView
           events={calendarEvents}
           focusEventId={calendarFocusEventId}
@@ -495,13 +574,21 @@ export function App() {
           error={error}
           onDismissError={() => setError(null)}
         />
+      ) : (
+        <EmojiStudio
+          emojis={customEmojis}
+          onChanged={handleCustomEmojisChanged}
+          onError={setError}
+          error={error}
+          onDismissError={() => setError(null)}
+        />
       )}
 
       {activeFeature === "chat" ? (
         <MembersPanel members={session.members} onProfile={setSelectedProfile} />
-      ) : (
+      ) : activeFeature === "calendar" ? (
         <CalendarSidePanel events={calendarEvents} onProfile={setSelectedProfile} />
-      )}
+      ) : null}
 
       {settingsOpen ? (
         <SettingsPage
@@ -859,6 +946,8 @@ function MessageList({
   messages,
   members,
   calendarEvents,
+  customEmojis,
+  currentUser,
   onProfile,
   onEventUpdated,
   onOpenCalendarEvent,
@@ -867,6 +956,8 @@ function MessageList({
   messages: MessageView[];
   members: ServerMemberView[];
   calendarEvents: CalendarEventView[];
+  customEmojis: CustomEmojiView[];
+  currentUser: UserProfile;
   onProfile: (profile: UserProfile) => void;
   onEventUpdated: (event: CalendarEventView) => void;
   onOpenCalendarEvent: (eventId: string) => void;
@@ -892,7 +983,12 @@ function MessageList({
   return (
     <section className="message-list">
       {messages.map((message) => (
-        <article className={`message-row ${message.id.startsWith("temp-") ? "pending" : ""}`} key={message.id}>
+        <article
+          className={`message-row ${message.id.startsWith("temp-") ? "pending" : ""} ${
+            messageMentionsUser(message.content, currentUser) ? "mentioned" : ""
+          }`}
+          key={message.id}
+        >
           <button className="avatar-button" onClick={() => onProfile(message.author)}>
             <Avatar profile={message.author} size="md" />
           </button>
@@ -901,7 +997,7 @@ function MessageList({
               <button onClick={() => onProfile(message.author)}>{message.author.displayName}</button>
               <time>{formatTime(message.createdAt)}</time>
             </div>
-            {renderMessageText(stripEventTokens(message.content), members, onProfile)}
+            {renderMessageText(stripEventTokens(message.content), members, customEmojis, onProfile)}
             {extractEventIds(message.content).map((eventId) => {
               const event = calendarEvents.find((candidate) => candidate.id === eventId);
 
@@ -995,6 +1091,7 @@ function Composer({
   currentUser,
   members,
   calendarEvents,
+  customEmojis,
   socket,
   onError,
   onOptimisticMessage,
@@ -1004,6 +1101,7 @@ function Composer({
   currentUser: UserProfile;
   members: ServerMemberView[];
   calendarEvents: CalendarEventView[];
+  customEmojis: CustomEmojiView[];
   socket: ChatSocket | null;
   onError: (error: string | null) => void;
   onOptimisticMessage: (message: MessageView) => void;
@@ -1015,6 +1113,8 @@ function Composer({
   const [sending, setSending] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [eventPickerOpen, setEventPickerOpen] = useState(false);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [emojiSearch, setEmojiSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mentionQuery = getMentionQuery(draft);
   const mentionSuggestions = useMemo(
@@ -1034,6 +1134,22 @@ function Composer({
     [members, mentionQuery]
   );
   const canSend = draft.trim().length > 0 || file || attachedEvent;
+  const filteredDefaultEmojis = useMemo(
+    () =>
+      defaultEmojis.filter(
+        (emoji) =>
+          !emojiSearch.trim() || emoji.name.toLowerCase().includes(emojiSearch.trim().toLowerCase())
+      ),
+    [emojiSearch]
+  );
+  const filteredCustomEmojis = useMemo(
+    () =>
+      customEmojis.filter(
+        (emoji) =>
+          !emojiSearch.trim() || emoji.name.toLowerCase().includes(emojiSearch.trim().toLowerCase())
+      ),
+    [customEmojis, emojiSearch]
+  );
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1099,6 +1215,8 @@ function Composer({
       setAttachedEvent(null);
       setAttachmentMenuOpen(false);
       setEventPickerOpen(false);
+      setEmojiPickerOpen(false);
+      setEmojiSearch("");
 
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -1112,6 +1230,16 @@ function Composer({
 
   const applyMention = (member: ServerMemberView) => {
     setDraft((current) => replaceMentionQuery(current, member.username));
+  };
+
+  const applyUnicodeEmoji = (emoji: DefaultEmoji) => {
+    setDraft((current) => `${current}${current.endsWith(" ") || current.length === 0 ? "" : " "}${emoji.emoji} `);
+    setEmojiPickerOpen(false);
+  };
+
+  const applyCustomEmoji = (emoji: CustomEmojiView) => {
+    setDraft((current) => `${current}${current.endsWith(" ") || current.length === 0 ? "" : " "}:${emoji.name}: `);
+    setEmojiPickerOpen(false);
   };
 
   return (
@@ -1183,38 +1311,375 @@ function Composer({
           )}
         </div>
       ) : null}
-      <button
-        type="button"
-        className="icon-button attach-button"
-        onClick={() => setAttachmentMenuOpen((current) => !current)}
-        aria-label="Add attachment"
-      >
-        <Paperclip size={20} />
-      </button>
-      <div className="composer-input">
-        {file ? (
-          <button type="button" className="file-chip" onClick={() => setFile(null)}>
-            {file.name}
-            <X size={14} />
-          </button>
-        ) : null}
-        {attachedEvent ? (
-          <button type="button" className="file-chip event-chip" onClick={() => setAttachedEvent(null)}>
-            <CalendarDays size={14} />
-            {attachedEvent.title}
-            <X size={14} />
-          </button>
-        ) : null}
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={`Message #${channel.name}`}
+      {emojiPickerOpen ? (
+        <EmojiPickerMenu
+          search={emojiSearch}
+          defaultEmojis={filteredDefaultEmojis}
+          customEmojis={filteredCustomEmojis}
+          onSearchChange={setEmojiSearch}
+          onUnicodeSelect={applyUnicodeEmoji}
+          onCustomSelect={applyCustomEmoji}
         />
+      ) : null}
+      <div className="composer-bar">
+        <button
+          type="button"
+          className="composer-tool attach-button"
+          onClick={() => {
+            setAttachmentMenuOpen((current) => !current);
+            setEmojiPickerOpen(false);
+          }}
+          aria-label="Add attachment"
+          title="Add attachment"
+        >
+          <Paperclip size={22} />
+        </button>
+        <div className="composer-input">
+          {file ? (
+            <button type="button" className="file-chip" onClick={() => setFile(null)}>
+              {file.name}
+              <X size={14} />
+            </button>
+          ) : null}
+          {attachedEvent ? (
+            <button type="button" className="file-chip event-chip" onClick={() => setAttachedEvent(null)}>
+              <CalendarDays size={14} />
+              {attachedEvent.title}
+              <X size={14} />
+            </button>
+          ) : null}
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={`Message #${channel.name}`}
+          />
+        </div>
+        <button
+          type="button"
+          className="composer-tool emoji-trigger"
+          onClick={() => {
+            setEmojiPickerOpen((current) => !current);
+            setAttachmentMenuOpen(false);
+            setEventPickerOpen(false);
+          }}
+          aria-label="Add emoji"
+          title="Add emoji"
+        >
+          <Smile size={22} />
+        </button>
+        <button className="composer-send" disabled={!canSend || sending} aria-label="Send">
+          {sending ? <Loader2 className="spin" size={20} /> : <Send size={20} />}
+        </button>
       </div>
-      <button className="send-button" disabled={!canSend || sending} aria-label="Send">
-        {sending ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-      </button>
     </form>
+  );
+}
+
+function EmojiPickerMenu({
+  search,
+  defaultEmojis,
+  customEmojis,
+  onSearchChange,
+  onUnicodeSelect,
+  onCustomSelect
+}: {
+  search: string;
+  defaultEmojis: DefaultEmoji[];
+  customEmojis: CustomEmojiView[];
+  onSearchChange: (value: string) => void;
+  onUnicodeSelect: (emoji: DefaultEmoji) => void;
+  onCustomSelect: (emoji: CustomEmojiView) => void;
+}) {
+  return (
+    <div className="emoji-picker-menu">
+      <div className="emoji-picker-tabs">
+        <button type="button" className="active">Emoji</button>
+      </div>
+      <label className="emoji-search">
+        <Search size={18} />
+        <input
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder="Search emoji"
+        />
+      </label>
+      {customEmojis.length > 0 ? (
+        <section className="emoji-section">
+          <h4>GCChat</h4>
+          <div className="emoji-grid">
+            {customEmojis.map((emoji) => (
+              <button type="button" key={emoji.id} onClick={() => onCustomSelect(emoji)} title={`:${emoji.name}:`}>
+                <img src={emoji.imageUrl} alt="" />
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      <section className="emoji-section">
+        <h4>Default</h4>
+        <div className="emoji-grid">
+          {defaultEmojis.map((emoji) => (
+            <button type="button" key={emoji.name} onClick={() => onUnicodeSelect(emoji)} title={emoji.name}>
+              <span>{emoji.emoji}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function EmojiStudio({
+  emojis,
+  onChanged,
+  onError,
+  error,
+  onDismissError
+}: {
+  emojis: CustomEmojiView[];
+  onChanged: (emojis: CustomEmojiView[]) => void;
+  onError: (error: string | null) => void;
+  error: string | null;
+  onDismissError: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<CustomEmojiView | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!name.trim() || !file || busy) {
+      return;
+    }
+
+    setBusy(true);
+    onError(null);
+
+    try {
+      const uploaded = await api.upload(file, "emoji");
+      const emoji = await api.createCustomEmoji({
+        name,
+        imageUrl: uploaded.url
+      });
+      onChanged(upsertCustomEmoji(emojis, emoji));
+      setName("");
+      setFile(null);
+
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="emoji-studio-panel">
+      <header className="chat-header">
+        <div className="chat-title">
+          <SmilePlus size={22} />
+          <span>Emoji Studio</span>
+        </div>
+      </header>
+
+      {error ? (
+        <div className="error-banner">
+          <span>{error}</span>
+          <button onClick={onDismissError} aria-label="Dismiss">
+            <X size={16} />
+          </button>
+        </div>
+      ) : null}
+
+      <div className="emoji-studio-content">
+        <form className="emoji-create-card" onSubmit={submit}>
+          <div>
+            <h2>Create Emoji</h2>
+            <p>Upload a small image or GIF and give it a short name like <code>:foodrun:</code>.</p>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            hidden
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          />
+          <button type="button" className="emoji-upload-box" onClick={() => fileInputRef.current?.click()}>
+            {file ? (
+              <span>{file.name}</span>
+            ) : (
+              <>
+                <ImageUp size={24} />
+                Upload image
+              </>
+            )}
+          </button>
+          <label>
+            Emoji name
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="foodrun" />
+          </label>
+          <button className="primary-button" disabled={!name.trim() || !file || busy}>
+            {busy ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
+            Add Emoji
+          </button>
+        </form>
+
+        <section className="emoji-library-card">
+          <header>
+            <div>
+              <h2>Emoji Library</h2>
+              <p>{emojis.length} custom emoji{emojis.length === 1 ? "" : "s"}</p>
+            </div>
+          </header>
+          {emojis.length === 0 ? (
+            <div className="emoji-empty-state">
+              <Smile size={26} />
+              <p>No custom emojis yet.</p>
+            </div>
+          ) : (
+            <div className="emoji-admin-grid">
+              {emojis.map((emoji) => (
+                <button key={emoji.id} onClick={() => setEditing(emoji)}>
+                  <img src={emoji.imageUrl} alt="" />
+                  <strong>:{emoji.name}:</strong>
+                  <small>by {emoji.createdBy.displayName}</small>
+                  <small>{emoji.useCount} uses</small>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      {editing ? (
+        <EmojiEditModal
+          emoji={editing}
+          currentEmojis={emojis}
+          onClose={() => setEditing(null)}
+          onChanged={(next) => {
+            onChanged(next);
+            setEditing(null);
+          }}
+          onError={onError}
+        />
+      ) : null}
+    </main>
+  );
+}
+
+function EmojiEditModal({
+  emoji,
+  currentEmojis,
+  onClose,
+  onChanged,
+  onError
+}: {
+  emoji: CustomEmojiView;
+  currentEmojis: CustomEmojiView[];
+  onClose: () => void;
+  onChanged: (emojis: CustomEmojiView[]) => void;
+  onError: (error: string | null) => void;
+}) {
+  const [name, setName] = useState(emoji.name);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState<"save" | "delete" | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy("save");
+    onError(null);
+
+    try {
+      const uploaded = file ? await api.upload(file, "emoji") : null;
+      const updated = await api.updateCustomEmoji(emoji.id, {
+        name,
+        imageUrl: uploaded?.url
+      });
+      onChanged(upsertCustomEmoji(currentEmojis, updated));
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const deleteEmoji = async () => {
+    const confirmed = window.confirm(`Delete :${emoji.name}:? Messages that already used it will show the text token.`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    setBusy("delete");
+    onError(null);
+
+    try {
+      onChanged(await api.deleteCustomEmoji(emoji.id));
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <form className="emoji-edit-modal" onSubmit={save}>
+        <header>
+          <div>
+            <h2>Edit Emoji</h2>
+            <p>:{emoji.name}:</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="emoji-edit-preview">
+          <img src={emoji.imageUrl} alt="" />
+          <div>
+            <strong>{emoji.useCount} uses</strong>
+            <span>Created by {emoji.createdBy.displayName}</span>
+            <small>{formatDate(emoji.createdAt)}</small>
+          </div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          hidden
+          onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+        />
+        <label>
+          Emoji name
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+        </label>
+        <button type="button" className="secondary-button" onClick={() => fileInputRef.current?.click()}>
+          <ImageUp size={16} />
+          {file ? file.name : "Change image"}
+        </button>
+        <footer>
+          <button type="button" className="secondary-button danger" onClick={deleteEmoji} disabled={busy !== null}>
+            {busy === "delete" ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+            Delete
+          </button>
+          <div>
+            <button type="button" className="secondary-button" onClick={onClose}>
+              Cancel
+            </button>
+            <button className="primary-button" disabled={!name.trim() || busy !== null}>
+              {busy === "save" ? <Loader2 className="spin" size={16} /> : <Pencil size={16} />}
+              Save
+            </button>
+          </div>
+        </footer>
+      </form>
+    </div>
   );
 }
 
@@ -1619,7 +2084,7 @@ function MembersPanel({
             status={member.isOnline ? "online" : "offline"}
             muted={Boolean(member.bannedAt)}
           />
-          <span>{member.displayName}</span>
+          <span className="member-name">{member.displayName}</span>
           {member.bannedAt ? <em>Banned</em> : null}
           {member.role === "SUPER_ADMIN" ? <ShieldCheck size={14} /> : member.role === "ADMIN" ? <Shield size={14} /> : null}
         </button>
@@ -2250,6 +2715,17 @@ function upsertCalendarEvent(
   return next.sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt));
 }
 
+function upsertCustomEmoji(
+  emojis: CustomEmojiView[],
+  emoji: CustomEmojiView
+): CustomEmojiView[] {
+  const next = emojis.some((existing) => existing.id === emoji.id)
+    ? emojis.map((existing) => (existing.id === emoji.id ? emoji : existing))
+    : [...emojis, emoji];
+
+  return next.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function emitMessage(socket: ChatSocket, payload: { channelId: string } & CreateMessageRequest) {
   return new Promise<MessageView>((resolve, reject) => {
     socket.emit("message:create", payload, (response) => {
@@ -2265,38 +2741,56 @@ function emitMessage(socket: ChatSocket, payload: { channelId: string } & Create
 function renderMessageText(
   content: string,
   members: ServerMemberView[],
+  customEmojis: CustomEmojiView[],
   onProfile: (profile: UserProfile) => void
 ) {
   if (!content.trim()) {
     return null;
   }
 
-  const parts = content.split(/(@[a-zA-Z0-9_.-]+)/g);
+  const parts = content.split(/(@[a-zA-Z0-9_.-]+|:[a-zA-Z0-9_]{2,32}:)/g);
 
   return (
     <p>
       {parts.map((part, index) => {
-        if (!part.startsWith("@")) {
-          return <span key={`${part}-${index}`}>{part}</span>;
+        if (part.startsWith("@")) {
+          const username = part.slice(1).toLowerCase();
+          const member = members.find((candidate) => candidate.username.toLowerCase() === username);
+
+          if (!member) {
+            return <span key={`${part}-${index}`}>{part}</span>;
+          }
+
+          return (
+            <button
+              className="mention-pill"
+              key={`${part}-${index}`}
+              type="button"
+              onClick={() => onProfile(member)}
+            >
+              @{member.displayName}
+            </button>
+          );
         }
 
-        const username = part.slice(1).toLowerCase();
-        const member = members.find((candidate) => candidate.username.toLowerCase() === username);
+        if (part.startsWith(":") && part.endsWith(":")) {
+          const emojiName = part.slice(1, -1).toLowerCase();
+          const emoji = customEmojis.find((candidate) => candidate.name === emojiName);
 
-        if (!member) {
-          return <span key={`${part}-${index}`}>{part}</span>;
+          if (emoji) {
+            return (
+              <img
+                className="inline-custom-emoji"
+                key={`${part}-${index}`}
+                src={emoji.imageUrl}
+                alt={`:${emoji.name}:`}
+                title={`:${emoji.name}:`}
+              />
+            );
+          }
         }
 
-        return (
-          <button
-            className="mention-pill"
-            key={`${part}-${index}`}
-            type="button"
-            onClick={() => onProfile(member)}
-          >
-            @{member.displayName}
-          </button>
-        );
+        return <span key={`${part}-${index}`}>{part}</span>;
       })}
     </p>
   );

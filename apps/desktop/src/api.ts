@@ -3,13 +3,16 @@ import type {
   BootstrapPayload,
   CalendarEventView,
   ChannelSummary,
+  CustomEmojiView,
   CreateChannelRequest,
   CreateCalendarEventRequest,
+  CreateCustomEmojiRequest,
   CreateMessageRequest,
   DeleteChannelRequest,
   MessageView,
   SetCalendarEventOptInRequest,
   UpdateAccountRequest,
+  UpdateCustomEmojiRequest,
   UpdateUserBanRequest,
   UpdateProfileRequest,
   UpdateUserRoleRequest,
@@ -117,6 +120,30 @@ export class ApiClient {
     return this.request<CalendarEventView>(`/calendar/events/${eventId}/opt-in`, {
       method: "PATCH",
       body: JSON.stringify(input)
+    });
+  }
+
+  public getCustomEmojis() {
+    return this.request<CustomEmojiView[]>("/emojis");
+  }
+
+  public createCustomEmoji(input: CreateCustomEmojiRequest) {
+    return this.request<CustomEmojiView>("/emojis", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public updateCustomEmoji(emojiId: string, input: UpdateCustomEmojiRequest) {
+    return this.request<CustomEmojiView>(`/emojis/${emojiId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public deleteCustomEmoji(emojiId: string) {
+    return this.request<CustomEmojiView[]>(`/emojis/${emojiId}`, {
+      method: "DELETE"
     });
   }
 

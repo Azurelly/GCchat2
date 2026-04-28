@@ -1,7 +1,7 @@
 export const GLOBAL_SERVER_NAME = "GCChat";
 export const GLOBAL_CHANNEL_NAME = "general";
 
-export type UploadKind = "avatar" | "attachment";
+export type UploadKind = "avatar" | "attachment" | "emoji";
 export type UserRole = "USER" | "ADMIN" | "SUPER_ADMIN";
 
 export interface ApiErrorResponse {
@@ -69,6 +69,16 @@ export interface CalendarEventView {
   creator: UserProfile;
   optIns: CalendarEventOptInView[];
   viewerOptedIn: boolean;
+}
+
+export interface CustomEmojiView {
+  id: string;
+  name: string;
+  imageUrl: string;
+  useCount: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: UserProfile;
 }
 
 export interface BootstrapPayload {
@@ -149,6 +159,16 @@ export interface SetCalendarEventOptInRequest {
   optedIn: boolean;
 }
 
+export interface CreateCustomEmojiRequest {
+  name: string;
+  imageUrl: string;
+}
+
+export interface UpdateCustomEmojiRequest {
+  name?: string;
+  imageUrl?: string;
+}
+
 export interface ClientToServerEvents {
   "channel:join": (
     payload: { channelId: string },
@@ -167,4 +187,5 @@ export interface ServerToClientEvents {
   "channels:updated": (channels: ChannelSummary[]) => void;
   "session:banned": () => void;
   "calendar:event:upsert": (event: CalendarEventView) => void;
+  "emojis:updated": (emojis: CustomEmojiView[]) => void;
 }

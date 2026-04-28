@@ -157,6 +157,63 @@ describe("messages API", () => {
   });
 });
 
+describe("custom emoji API", () => {
+  it("lets admins manage custom emojis and counts message usage", async () => {
+    const { app } = makeApp();
+    const owner = await request(app)
+      .post("/auth/register")
+      .send({ username: "Owner", password: "password123" })
+      .expect(201);
+    const friend = await request(app)
+      .post("/auth/register")
+      .send({ username: "Friend", password: "password123" })
+      .expect(201);
+
+    await request(app)
+      .post("/emojis")
+      .set("authorization", `Bearer ${friend.body.token}`)
+      .send({ name: "party", imageUrl: "https://example.com/party.png" })
+      .expect(403);
+
+    const emoji = await request(app)
+      .post("/emojis")
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ name: "Party", imageUrl: "https://example.com/party.png" })
+      .expect(201);
+
+    expect(emoji.body.name).toBe("party");
+    expect(emoji.body.createdBy.username).toBe("owner");
+
+    await request(app)
+      .post(`/channels/${owner.body.channel.id}/messages`)
+      .set("authorization", `Bearer ${friend.body.token}`)
+      .send({ content: "let's go :party: :party:" })
+      .expect(201);
+
+    const emojisAfterUse = await request(app)
+      .get("/emojis")
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .expect(200);
+
+    expect(emojisAfterUse.body[0].useCount).toBe(2);
+
+    const renamed = await request(app)
+      .patch(`/emojis/${emoji.body.id}`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ name: "food_run" })
+      .expect(200);
+
+    expect(renamed.body.name).toBe("food_run");
+
+    const deleted = await request(app)
+      .delete(`/emojis/${emoji.body.id}`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .expect(200);
+
+    expect(deleted.body).toEqual([]);
+  });
+});
+
 describe("role and moderation API", () => {
   it("lets admins create channels and only super admins delete them", async () => {
     const { app } = makeApp();

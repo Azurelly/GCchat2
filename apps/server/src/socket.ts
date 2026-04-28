@@ -104,6 +104,9 @@ export function attachRealtime(
         });
 
         io.to(channelRoom(message.channelId)).emit("message:new", message);
+        if (hasCustomEmojiToken(parsed.content)) {
+          io.emit("emojis:updated", await repo.listCustomEmojis());
+        }
         ack?.({ ok: true, message });
       } catch (error) {
         ack?.({ ok: false, error: getErrorMessage(error) });
@@ -134,6 +137,10 @@ export function attachRealtime(
 
   realtime.emitCalendarEvent = (event) => {
     io.emit("calendar:event:upsert", event);
+  };
+
+  realtime.emitEmojisUpdated = (emojis) => {
+    io.emit("emojis:updated", emojis);
   };
 
   return io;
@@ -192,4 +199,8 @@ function withPresence<T extends { id: string; isOnline: boolean }>(
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Request failed";
+}
+
+function hasCustomEmojiToken(content: string) {
+  return /:[a-z0-9_]{2,32}:/i.test(content);
 }

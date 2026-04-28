@@ -32,7 +32,8 @@ describe("realtime messaging", () => {
       emitMembersUpdated: () => undefined,
       emitChannelsUpdated: () => undefined,
       emitSessionBanned: () => undefined,
-      emitCalendarEvent: () => undefined
+      emitCalendarEvent: () => undefined,
+      emitEmojisUpdated: () => undefined
     };
     const app = createApp({ env, repo, storage: new MemoryAssetStorage(), realtime });
     const server = http.createServer(app);

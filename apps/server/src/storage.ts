@@ -103,12 +103,13 @@ export function createAssetStorage(env: ServerEnv): AssetStorage {
 }
 
 function validateUpload(kind: UploadKind, file: UploadFile) {
-  const allowedMimeTypes = kind === "avatar" ? allowedAvatarMimeTypes : allowedAttachmentMimeTypes;
+  const allowedMimeTypes =
+    kind === "avatar" || kind === "emoji" ? allowedAvatarMimeTypes : allowedAttachmentMimeTypes;
 
   if (!allowedMimeTypes.has(file.mimeType)) {
     throw new HttpError(
       400,
-      kind === "avatar"
+      kind === "avatar" || kind === "emoji"
         ? "Only JPG, PNG, WebP, and GIF images are supported"
         : "This file type is not supported yet"
     );

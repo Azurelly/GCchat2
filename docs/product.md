@@ -6,6 +6,7 @@ The left rail is feature navigation for the shared group hub:
 
 - Chat: the main place for channels, messages, profiles, and realtime conversation.
 - GC calendar: shared friend-group events such as birthdays, food plans, hangouts, trips, and other important dates.
+- Emoji Studio: admin-only custom emoji creation and management for friend-group inside jokes and shared reactions.
 - Future feature tabs may include polls, planning tools, media, memories, or other group-specific experiences.
 
 The current database still has `Server`, `Channel`, and `Membership` tables from the MVP foundation. Treat those as implementation details for the single shared hub unless the product direction changes. New UI should use hub/feature language instead of implying users create or switch between separate servers.
@@ -24,3 +25,10 @@ Permissions model:
 - Admins can create text channels in the Chat feature.
 - Super Admins can create/delete text channels, ban/unban accounts, and grant/remove Admin.
 - Banned users stay visible in member lists with disabled-looking styling, but cannot use the app.
+
+Emoji behavior:
+
+- All users can send default Unicode emoji from the chat composer.
+- Custom emojis are represented as `:emoji_name:` tokens and render as inline images.
+- Admins and Super Admins can create, rename, replace, and delete custom emojis in Emoji Studio.
+- Emoji Studio shows who created each emoji and how many times it has been used in messages.
