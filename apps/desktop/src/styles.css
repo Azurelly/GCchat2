@@ -623,12 +623,17 @@ select:focus {
 
 .voice-participant .live-badge + svg,
 .voice-participant .server-muted-icon + svg,
+.voice-participant .local-muted-icon + svg,
 .voice-participant svg + svg {
   margin-left: 0;
 }
 
 .voice-participant .server-muted-icon {
   color: #ed4245;
+}
+
+.voice-participant .local-muted-icon {
+  color: #b5bac1;
 }
 
 .voice-fallback-avatar {

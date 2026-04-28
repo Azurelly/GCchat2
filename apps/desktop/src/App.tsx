@@ -84,6 +84,7 @@ import type {
   UserRole,
   UserProfile,
   VoiceModerationRequest,
+  VoiceParticipantState,
   VoiceSelfStateRequest,
   VoiceStateView
 } from "@gcchat/shared";
@@ -246,6 +247,7 @@ export function App() {
   const voiceDiagnosticsRef = useRef<VoiceDiagnosticEntry[]>([]);
   const voiceDiagnosticCounterRef = useRef(0);
   const voiceParticipantsSignatureRef = useRef("");
+  const staleVoiceRoomsRef = useRef<WeakSet<Room>>(new WeakSet());
   const voiceVolumesRef = useRef<Record<string, number>>({});
   const locallyMutedVoiceUsersRef = useRef<string[]>([]);
   const activeChannel = useMemo(() => {
@@ -534,15 +536,15 @@ export function App() {
       for (const participant of room.remoteParticipants.values()) {
         const volume = getVoiceVolumeGain(
           participant.identity,
-          voiceVolumes,
-          locallyMutedVoiceUsers,
-          voiceDeafened
+          voiceVolumesRef.current,
+          locallyMutedVoiceUsersRef.current,
+          voiceDeafenedRef.current
         );
 
         participant.setVolume(volume);
       }
     },
-    [locallyMutedVoiceUsers, voiceDeafened, voiceVolumes]
+    []
   );
 
   const syncScreenShares = useCallback(
@@ -692,11 +694,50 @@ export function App() {
     [appendVoiceDiagnostic]
   );
 
+  const applySelfVoiceServerState = useCallback(
+    (selfState: VoiceParticipantState, reason: string) => {
+      const room = voiceRoomRef.current;
+      const nextDeafened = selfState.selfDeafened || selfState.serverDeafened;
+      const nextMuted =
+        selfState.selfMuted || selfState.serverMuted || selfState.serverDeafened || nextDeafened;
+      const mutedChanged = voiceMutedRef.current !== nextMuted;
+      const deafenedChanged = voiceDeafenedRef.current !== nextDeafened;
+
+      voiceDeafenedRef.current = nextDeafened;
+      voiceMutedRef.current = nextMuted;
+      setVoiceDeafened(nextDeafened);
+      setVoiceMuted(nextMuted);
+      applyVoiceAudioPreferences(room);
+
+      if (room && mutedChanged) {
+        void room.localParticipant.setMicrophoneEnabled(!nextMuted).catch((requestError) =>
+          appendVoiceDiagnostic("voice:self-audio-sync-error", {
+            reason,
+            error: getMessage(requestError)
+          })
+        );
+      }
+
+      if (mutedChanged || deafenedChanged) {
+        appendVoiceDiagnostic("voice:self-state-applied", {
+          reason,
+          nextMuted,
+          nextDeafened,
+          serverMuted: selfState.serverMuted,
+          serverDeafened: selfState.serverDeafened
+        });
+      }
+    },
+    [appendVoiceDiagnostic, applyVoiceAudioPreferences]
+  );
+
   const disconnectVoice = useCallback((notifyServer = true) => {
+    const room = voiceRoomRef.current;
+
     appendVoiceDiagnostic("leave:start", {
       notifyServer,
       socketConnected: Boolean(socketRef.current?.connected),
-      room: describeVoiceRoom(voiceRoomRef.current),
+      room: describeVoiceRoom(room),
       serverState: describeVoiceState(voiceServerStateRef.current, session?.user.id)
     });
 
@@ -704,11 +745,18 @@ export function App() {
       socketRef.current?.emit("voice:leave");
     }
 
-    void voiceRoomRef.current?.localParticipant.setScreenShareEnabled(false).catch(() => undefined);
-    voiceRoomRef.current?.disconnect();
+    if (room) {
+      staleVoiceRoomsRef.current.add(room);
+    }
+
     voiceRoomRef.current = null;
     voiceJoinedAtRef.current = null;
+    void room?.localParticipant.setScreenShareEnabled(false).catch(() => undefined);
+    room?.disconnect();
     screenShareStartingRef.current = false;
+    voiceMutedRef.current = false;
+    voiceDeafenedRef.current = false;
+    voiceSharingRef.current = false;
     clearVoiceAudio();
     setVoiceStatus("disconnected");
     setVoiceMuted(false);
@@ -756,9 +804,9 @@ export function App() {
         element.style.display = "none";
         element.volume = getVoiceVolumeGain(
           participant.identity,
-          voiceVolumes,
-          locallyMutedVoiceUsers,
-          voiceDeafened
+          voiceVolumesRef.current,
+          locallyMutedVoiceUsersRef.current,
+          voiceDeafenedRef.current
         );
         document.body.appendChild(element);
         voiceAudioElementsRef.current.add(element);
@@ -780,18 +828,28 @@ export function App() {
       };
 
       const sync = () => {
+        if (!room || staleVoiceRoomsRef.current.has(room)) {
+          appendVoiceDiagnostic("livekit:stale-sync-ignored", {
+            room: describeVoiceRoom(room)
+          });
+          return;
+        }
+
         syncVoiceParticipants(room);
         syncScreenShares(room);
         applyVoiceAudioPreferences(room);
       };
       const syncLocalScreenSharePresence = () => {
+        if (!room || staleVoiceRoomsRef.current.has(room)) {
+          appendVoiceDiagnostic("screen-share:stale-presence-ignored", {
+            room: describeVoiceRoom(room)
+          });
+          return;
+        }
+
         const wasSharing = voiceSharingRef.current;
 
         sync();
-
-        if (!room) {
-          return;
-        }
 
         const localSharing = screenShareStartingRef.current || isParticipantScreenSharing(room.localParticipant);
 
@@ -904,8 +962,17 @@ export function App() {
       );
       room.on(RoomEvent.Disconnected, () => {
         appendVoiceDiagnostic("livekit:disconnected", describeVoiceRoom(room));
+        if (room && staleVoiceRoomsRef.current.has(room)) {
+          appendVoiceDiagnostic("livekit:stale-disconnect-ignored", describeVoiceRoom(room));
+          return;
+        }
+
         clearVoiceAudio();
         voiceRoomRef.current = null;
+        voiceJoinedAtRef.current = null;
+        voiceMutedRef.current = false;
+        voiceDeafenedRef.current = false;
+        voiceSharingRef.current = false;
         setVoiceStatus("disconnected");
         setVoiceMuted(false);
         setVoiceDeafened(false);
@@ -961,8 +1028,10 @@ export function App() {
 
     try {
       const nextMuted = !voiceMuted;
-      await room.localParticipant.setMicrophoneEnabled(!nextMuted);
+      voiceMutedRef.current = nextMuted;
       setVoiceMuted(nextMuted);
+      syncVoiceParticipants(room);
+      await room.localParticipant.setMicrophoneEnabled(!nextMuted);
       appendVoiceDiagnostic("mute:toggled", {
         nextMuted,
         room: describeVoiceRoom(room)
@@ -973,6 +1042,9 @@ export function App() {
       }
       syncVoiceParticipants(room);
     } catch (requestError) {
+      voiceMutedRef.current = voiceMuted;
+      setVoiceMuted(voiceMuted);
+      syncVoiceParticipants(room);
       appendVoiceDiagnostic("mute:error", { error: getMessage(requestError) });
       setError(getMessage(requestError));
     }
@@ -989,9 +1061,13 @@ export function App() {
     try {
       const nextDeafened = !voiceDeafened;
       const forcedMuted = nextDeafened || Boolean(selfState?.serverMuted || selfState?.serverDeafened);
-      await room.localParticipant.setMicrophoneEnabled(!forcedMuted);
+      voiceDeafenedRef.current = nextDeafened;
+      voiceMutedRef.current = forcedMuted;
       setVoiceDeafened(nextDeafened);
       setVoiceMuted(forcedMuted);
+      applyVoiceAudioPreferences(room);
+      syncVoiceParticipants(room);
+      await room.localParticipant.setMicrophoneEnabled(!forcedMuted);
       appendVoiceDiagnostic("deafen:toggled", {
         nextDeafened,
         forcedMuted,
@@ -1004,6 +1080,12 @@ export function App() {
       applyVoiceAudioPreferences(room);
       syncVoiceParticipants(room);
     } catch (requestError) {
+      voiceDeafenedRef.current = voiceDeafened;
+      voiceMutedRef.current = voiceMuted;
+      setVoiceDeafened(voiceDeafened);
+      setVoiceMuted(voiceMuted);
+      applyVoiceAudioPreferences(room);
+      syncVoiceParticipants(room);
       appendVoiceDiagnostic("deafen:error", { error: getMessage(requestError) });
       setError(getMessage(requestError));
     }
@@ -1069,6 +1151,23 @@ export function App() {
   };
 
   const handleVoiceModeration = async (payload: VoiceModerationRequest) => {
+    setVoiceServerState((current) => ({
+      ...current,
+      participants: payload.disconnect
+        ? current.participants.filter((participant) => participant.userId !== payload.targetUserId)
+        : current.participants.map((participant) =>
+            participant.userId === payload.targetUserId
+              ? {
+                  ...participant,
+                  serverMuted: payload.serverMuted ?? participant.serverMuted,
+                  serverDeafened: payload.serverDeafened ?? participant.serverDeafened,
+                  selfMuted:
+                    payload.serverMuted === false || payload.serverDeafened === false ? false : participant.selfMuted,
+                  selfDeafened: payload.serverDeafened === false ? false : participant.selfDeafened
+                }
+              : participant
+          )
+    }));
     onErrorFromAsync(async () => {
       const state = await emitVoiceModeration(payload);
       if (state) {
@@ -1204,15 +1303,8 @@ export function App() {
       return;
     }
 
-    if (selfState.serverMuted || selfState.serverDeafened) {
-      void room.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
-      setVoiceMuted(true);
-    }
-
-    if (selfState.serverDeafened) {
-      setVoiceDeafened(true);
-    }
-  }, [session?.user.id, voiceServerState.participants]);
+    applySelfVoiceServerState(selfState, "server-state-effect");
+  }, [applySelfVoiceServerState, session?.user.id, voiceServerState.participants]);
 
   const enterBannedState = () => {
     localStorage.removeItem(tokenStorageKey);
@@ -1414,14 +1506,7 @@ export function App() {
 
       appendVoiceDiagnostic("socket:voice-moderated", state);
 
-      if (state.serverMuted || state.serverDeafened) {
-        void voiceRoomRef.current?.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
-        setVoiceMuted(true);
-      }
-
-      if (state.serverDeafened) {
-        setVoiceDeafened(true);
-      }
+      applySelfVoiceServerState(state, "socket:voice-moderated");
     });
 
     socket.on("voice:force-disconnect", () => {
@@ -1447,7 +1532,7 @@ export function App() {
       socket.disconnect();
       setSocket(null);
     };
-  }, [notificationPrefs, session?.token]);
+  }, [applySelfVoiceServerState, notificationPrefs, session?.token]);
 
   useEffect(() => {
     if (!session || !activeChannel) {
@@ -1734,16 +1819,23 @@ export function App() {
           onOpenVoiceDiagnostics={() => setVoiceDiagnosticsOpen(true)}
           onSetVoiceVolume={(userId, volume) => {
             const normalized = normalizeVoiceVolume(volume);
+            const nextVolumes = { ...voiceVolumesRef.current, [userId]: normalized };
             appendVoiceDiagnostic("volume:set", { userId, volume: normalized });
-            setVoiceVolumes((current) => ({ ...current, [userId]: normalized }));
+            voiceVolumesRef.current = nextVolumes;
+            setVoiceVolumes(nextVolumes);
+            applyVoiceAudioPreferences(voiceRoomRef.current);
+            syncVoiceParticipants(voiceRoomRef.current);
           }}
           onToggleLocalVoiceMute={(userId) => {
             appendVoiceDiagnostic("volume:toggle-local-mute", { userId });
-            setLocallyMutedVoiceUsers((current) =>
-              current.includes(userId)
-                ? current.filter((existing) => existing !== userId)
-                : [...current, userId]
-            );
+            const current = locallyMutedVoiceUsersRef.current;
+            const nextMutedUsers = current.includes(userId)
+              ? current.filter((existing) => existing !== userId)
+              : [...current, userId];
+            locallyMutedVoiceUsersRef.current = nextMutedUsers;
+            setLocallyMutedVoiceUsers(nextMutedUsers);
+            applyVoiceAudioPreferences(voiceRoomRef.current);
+            syncVoiceParticipants(voiceRoomRef.current);
           }}
           onVoiceModeration={(payload) => void handleVoiceModeration(payload)}
         />
@@ -2476,6 +2568,9 @@ function VoiceChannelSection({
                     <MicOff size={13} aria-label="Muted" />
                   ) : null}
                   {participant.isDeafened ? <VolumeX size={13} aria-label="Deafened" /> : null}
+                  {participant.locallyMuted ? (
+                    <VolumeX className="local-muted-icon" size={13} aria-label="Muted locally" />
+                  ) : null}
                 </button>
                 </div>
               ))}
@@ -2747,6 +2842,11 @@ function VoiceUserContextMenu({
 }) {
   const participant = state.participant;
   const canModerateParticipant = canModerate && !participant.isLocal;
+  const [localVolume, setLocalVolume] = useState(() => normalizeVoiceVolume(participant.volume));
+
+  useEffect(() => {
+    setLocalVolume(normalizeVoiceVolume(participant.volume));
+  }, [participant.userId, participant.volume]);
 
   return (
     <div
@@ -2767,10 +2867,14 @@ function VoiceUserContextMenu({
           type="range"
           min="0"
           max="100"
-          value={participant.locallyMuted ? 0 : normalizeVoiceVolume(participant.volume)}
-          onChange={(event) => onSetVolume(participant.userId, normalizeVoiceVolume(event.target.value))}
+          value={localVolume}
+          onChange={(event) => {
+            const nextVolume = normalizeVoiceVolume(event.target.value);
+            setLocalVolume(nextVolume);
+            onSetVolume(participant.userId, nextVolume);
+          }}
         />
-        <small>{participant.locallyMuted ? "Muted locally" : `${normalizeVoiceVolume(participant.volume)}%`}</small>
+        <small>{participant.locallyMuted ? `Muted locally (${localVolume}%)` : `${localVolume}%`}</small>
       </label>
       <button
         type="button"

@@ -172,8 +172,8 @@ export function attachRealtime(
 
         const nextPresence: VoicePresence = {
           userId: socket.data.user.id,
-          selfMuted: existing?.selfMuted ?? (moderation.serverMuted || moderation.serverDeafened),
-          selfDeafened: existing?.selfDeafened ?? moderation.serverDeafened,
+          selfMuted: existing?.selfMuted ?? false,
+          selfDeafened: existing?.selfDeafened ?? false,
           serverMuted: moderation.serverMuted,
           serverDeafened: moderation.serverDeafened,
           screenSharing: existing?.screenSharing ?? false,
@@ -251,8 +251,8 @@ export function attachRealtime(
         const existing = voiceParticipants.get(socket.data.user.id);
         const basePresence: VoicePresence = existing ?? {
           userId: socket.data.user.id,
-          selfMuted: moderation.serverMuted || moderation.serverDeafened,
-          selfDeafened: moderation.serverDeafened,
+          selfMuted: false,
+          selfDeafened: false,
           serverMuted: moderation.serverMuted,
           serverDeafened: moderation.serverDeafened,
           screenSharing: false,
@@ -261,11 +261,14 @@ export function attachRealtime(
           updatedAt: now
         };
 
-        const selfDeafened = payload.selfDeafened ?? basePresence.selfDeafened;
-        const moderatedMuted = basePresence.serverMuted || basePresence.serverDeafened;
+        const moderated = basePresence.serverMuted || basePresence.serverDeafened;
+        const selfDeafened = basePresence.serverDeafened
+          ? basePresence.selfDeafened
+          : payload.selfDeafened ?? basePresence.selfDeafened;
+        const requestedSelfMuted = payload.selfMuted ?? basePresence.selfMuted;
         const next: VoicePresence = {
           ...basePresence,
-          selfMuted: moderatedMuted || selfDeafened || (payload.selfMuted ?? basePresence.selfMuted),
+          selfMuted: selfDeafened || (moderated ? basePresence.selfMuted : requestedSelfMuted),
           selfDeafened,
           screenSharing: payload.screenSharing ?? basePresence.screenSharing,
           reconnecting: false,
@@ -337,16 +340,19 @@ export function attachRealtime(
           const currentPresence = voiceParticipants.get(payload.targetUserId);
 
           if (currentPresence) {
+            const removingServerMute = currentPresence.serverMuted && payload.serverMuted === false;
+            const removingServerDeafen = currentPresence.serverDeafened && payload.serverDeafened === false;
+            const nextSelfDeafened = removingServerDeafen ? false : currentPresence.selfDeafened;
+            const nextSelfMuted =
+              removingServerMute || removingServerDeafen
+                ? false
+                : currentPresence.selfMuted || nextSelfDeafened;
             const nextPresence: VoicePresence = {
               ...currentPresence,
               serverMuted: nextModeration.serverMuted,
               serverDeafened: nextModeration.serverDeafened,
-              selfMuted:
-                nextModeration.serverMuted ||
-                nextModeration.serverDeafened ||
-                currentPresence.selfDeafened ||
-                currentPresence.selfMuted,
-              selfDeafened: nextModeration.serverDeafened || currentPresence.selfDeafened,
+              selfMuted: nextSelfMuted,
+              selfDeafened: nextSelfDeafened,
               updatedAt: now
             };
 
