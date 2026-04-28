@@ -2,11 +2,16 @@ import type {
   AuthResponse,
   BootstrapPayload,
   CalendarEventView,
+  ChannelSummary,
+  CreateChannelRequest,
   CreateCalendarEventRequest,
   CreateMessageRequest,
+  DeleteChannelRequest,
   MessageView,
   SetCalendarEventOptInRequest,
+  UpdateUserBanRequest,
   UpdateProfileRequest,
+  UpdateUserRoleRequest,
   UploadKind,
   UploadResponse,
   UserProfile
@@ -52,6 +57,34 @@ export class ApiClient {
 
   public getMessages(channelId: string) {
     return this.request<MessageView[]>(`/channels/${channelId}/messages`);
+  }
+
+  public createChannel(input: CreateChannelRequest) {
+    return this.request<ChannelSummary>("/channels", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public deleteChannel(channelId: string, input: DeleteChannelRequest) {
+    return this.request<ChannelSummary[]>(`/channels/${channelId}`, {
+      method: "DELETE",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public updateUserRole(userId: string, input: UpdateUserRoleRequest) {
+    return this.request<UserProfile>(`/users/${userId}/role`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public updateUserBan(userId: string, input: UpdateUserBanRequest) {
+    return this.request<UserProfile>(`/users/${userId}/ban`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
   }
 
   public createMessage(channelId: string, input: CreateMessageRequest) {

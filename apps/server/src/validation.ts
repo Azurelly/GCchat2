@@ -41,6 +41,37 @@ export const createMessageSchema = z
     message: "Message must include text or an attachment."
   });
 
+export const channelNameSchema = z
+  .string()
+  .trim()
+  .min(1, "Channel name is required.")
+  .max(32, "Channel name must be 32 characters or fewer.")
+  .regex(/^[a-zA-Z0-9 -]+$/, "Channel names can use letters, numbers, spaces, and dashes.");
+
+export const createChannelSchema = z
+  .object({
+    name: channelNameSchema
+  })
+  .strict();
+
+export const deleteChannelSchema = z
+  .object({
+    confirmationName: z.string().min(1).max(32)
+  })
+  .strict();
+
+export const updateUserRoleSchema = z
+  .object({
+    role: z.enum(["USER", "ADMIN"])
+  })
+  .strict();
+
+export const updateUserBanSchema = z
+  .object({
+    banned: z.boolean()
+  })
+  .strict();
+
 export const createCalendarEventSchema = z
   .object({
     title: z.string().trim().min(1, "Event title is required.").max(90),

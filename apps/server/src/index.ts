@@ -14,6 +14,8 @@ const realtime: RealtimePublisher = {
   emitMessage: () => undefined,
   emitProfileUpdated: () => undefined,
   emitMembersUpdated: () => undefined,
+  emitChannelsUpdated: () => undefined,
+  emitSessionBanned: () => undefined,
   emitCalendarEvent: () => undefined
 };
 

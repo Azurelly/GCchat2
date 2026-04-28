@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
+  Ban,
   CalendarDays,
   Check,
   ChevronLeft,
@@ -12,10 +13,15 @@ import {
   Loader2,
   LogOut,
   MessageCircle,
+  Minus,
   Plus,
+  RefreshCw,
   Send,
   Settings,
+  Shield,
+  ShieldCheck,
   Sparkles,
+  Trash2,
   Upload,
   Users,
   X
@@ -25,11 +31,13 @@ import type {
   AuthResponse,
   BootstrapPayload,
   CalendarEventView,
+  ChannelSummary,
   CreateMessageRequest,
   MessageView,
   ServerMemberView,
   ServerToClientEvents,
   ClientToServerEvents,
+  UserRole,
   UserProfile
 } from "@gcchat/shared";
 import { API_URL, ApiClient } from "./api";
@@ -48,17 +56,31 @@ const api = new ApiClient();
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [activeFeature, setActiveFeature] = useState<ActiveFeature>("chat");
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageView[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
   const [loading, setLoading] = useState(true);
+  const [banned, setBanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<UserProfile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [deleteChannel, setDeleteChannel] = useState<ChannelSummary | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
     phase: "idle",
     canRestart: false
   });
   const socketRef = useRef<ChatSocket | null>(null);
+  const activeChannel = useMemo(() => {
+    if (!session) {
+      return null;
+    }
+
+    return (
+      session.channels.find((channel) => channel.id === activeChannelId) ??
+      session.channels[0] ??
+      session.channel
+    );
+  }, [activeChannelId, session]);
 
   useEffect(() => {
     const token = localStorage.getItem(tokenStorageKey);
@@ -71,8 +93,16 @@ export function App() {
     api.setToken(token);
     api
       .me()
-      .then((bootstrap) => setSession({ ...bootstrap, token }))
-      .catch(() => {
+      .then((bootstrap) => {
+        setSession({ ...bootstrap, token });
+        setActiveChannelId(bootstrap.channel.id);
+        setBanned(Boolean(bootstrap.user.bannedAt));
+      })
+      .catch((requestError) => {
+        if (getMessage(requestError) === "You are banned") {
+          setBanned(true);
+        }
+
         localStorage.removeItem(tokenStorageKey);
         api.setToken(null);
       })
@@ -86,8 +116,20 @@ export function App() {
     return unsubscribe;
   }, []);
 
+  const enterBannedState = () => {
+    localStorage.removeItem(tokenStorageKey);
+    api.setToken(null);
+    socketRef.current?.disconnect();
+    setBanned(true);
+    setSession(null);
+    setMessages([]);
+    setCalendarEvents([]);
+    setSelectedProfile(null);
+    setSettingsOpen(false);
+  };
+
   useEffect(() => {
-    if (!session) {
+    if (!session || !activeChannel) {
       socketRef.current?.disconnect();
       socketRef.current = null;
       setMessages([]);
@@ -99,7 +141,7 @@ export function App() {
     let active = true;
 
     api
-      .getMessages(session.channel.id)
+      .getMessages(activeChannel.id)
       .then((history) => {
         if (active) {
           setMessages(history);
@@ -122,10 +164,14 @@ export function App() {
     });
 
     socket.on("connect", () => {
-      socket.emit("channel:join", { channelId: session.channel.id });
+      socket.emit("channel:join", { channelId: activeChannel.id });
     });
 
     socket.on("message:new", (message) => {
+      if (message.channelId !== activeChannel.id) {
+        return;
+      }
+
       setMessages((current) => {
         if (current.some((existing) => existing.id === message.id)) {
           return current;
@@ -150,6 +196,27 @@ export function App() {
       setSession((current) => (current ? { ...current, members } : current));
     });
 
+    socket.on("channels:updated", (channels) => {
+      setSession((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const fallbackChannel = channels[0] ?? current.channel;
+
+        return {
+          ...current,
+          channels,
+          channel: channels.find((channel) => channel.id === current.channel.id) ?? fallbackChannel
+        };
+      });
+      setActiveChannelId((current) =>
+        channels.some((channel) => channel.id === current) ? current : channels[0]?.id ?? null
+      );
+    });
+
+    socket.on("session:banned", enterBannedState);
+
     socket.on("calendar:event:upsert", () => {
       void api.getCalendarEvents().then((events) => {
         if (active) {
@@ -165,12 +232,14 @@ export function App() {
       active = false;
       socket.disconnect();
     };
-  }, [session?.token, session?.channel.id]);
+  }, [activeChannel?.id, session?.token]);
 
   const handleAuth = (auth: AuthResponse) => {
     localStorage.setItem(tokenStorageKey, auth.token);
     api.setToken(auth.token);
     setSession(auth);
+    setActiveChannelId(auth.channel.id);
+    setBanned(Boolean(auth.user.bannedAt));
     setError(null);
   };
 
@@ -179,6 +248,8 @@ export function App() {
     api.setToken(null);
     socketRef.current?.disconnect();
     setSession(null);
+    setActiveChannelId(null);
+    setBanned(false);
     setSelectedProfile(null);
     setSettingsOpen(false);
   };
@@ -196,19 +267,74 @@ export function App() {
     setCalendarEvents((current) => upsertCalendarEvent(current, event));
   };
 
+  const handleChannelCreated = (channel: ChannelSummary) => {
+    setSession((current) =>
+      current
+        ? {
+            ...current,
+            channels: current.channels.some((existing) => existing.id === channel.id)
+              ? current.channels
+              : [...current.channels, channel]
+          }
+        : current
+    );
+    setActiveChannelId(channel.id);
+  };
+
+  const handleChannelsChanged = (channels: ChannelSummary[]) => {
+    setSession((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const fallbackChannel = channels[0] ?? current.channel;
+
+      return {
+        ...current,
+        channels,
+        channel: channels.find((channel) => channel.id === current.channel.id) ?? fallbackChannel
+      };
+    });
+    setActiveChannelId((current) =>
+      channels.some((channel) => channel.id === current) ? current : channels[0]?.id ?? null
+    );
+  };
+
+  const handleManagedProfile = (profile: UserProfile) => {
+    setSession((current) => (current ? applyProfileUpdate(current, profile) : current));
+    setSelectedProfile(profile);
+  };
+
   if (loading) {
     return (
-      <div className="loading-screen">
-        <Loader2 className="spin" size={28} />
-      </div>
+      <AppFrame updateStatus={updateStatus}>
+        <div className="loading-screen">
+          <Loader2 className="spin" size={28} />
+        </div>
+      </AppFrame>
+    );
+  }
+
+  if (banned) {
+    return (
+      <AppFrame updateStatus={updateStatus}>
+        <BannedScreen onLogout={handleLogout} />
+      </AppFrame>
     );
   }
 
   if (!session) {
-    return <AuthScreen onAuth={handleAuth} />;
+    return (
+      <AppFrame updateStatus={updateStatus}>
+        <AuthScreen onAuth={handleAuth} onBanned={() => setBanned(true)} />
+      </AppFrame>
+    );
   }
 
+  const currentChannel = activeChannel ?? session.channel;
+
   return (
+    <AppFrame updateStatus={updateStatus}>
     <div className={`app-shell ${activeFeature === "chat" ? "chat-shell" : "calendar-shell"}`}>
       <aside className="server-rail">
         <button
@@ -230,36 +356,17 @@ export function App() {
       </aside>
 
       {activeFeature === "chat" ? (
-        <aside className="channel-sidebar">
-          <div className="server-header">
-            <span>{session.server.name}</span>
-            <Sparkles size={16} />
-          </div>
-
-          <div className="channel-group">
-            <div className="channel-group-title">Text Channels</div>
-            <button className="channel-link active">
-              <Hash size={18} />
-              {session.channel.name}
-            </button>
-          </div>
-
-          <div className="user-panel">
-            <button className="user-identity" onClick={() => setSelectedProfile(session.user)}>
-              <Avatar profile={session.user} size="sm" />
-              <span>
-                <strong>{session.user.displayName}</strong>
-                <small>@{session.user.username}</small>
-              </span>
-            </button>
-            <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Settings">
-              <Settings size={18} />
-            </button>
-            <button className="icon-button" onClick={handleLogout} aria-label="Log out">
-              <LogOut size={18} />
-            </button>
-          </div>
-        </aside>
+        <ChannelSidebar
+          session={session}
+          activeChannelId={currentChannel.id}
+          onChannelSelect={setActiveChannelId}
+          onChannelCreated={handleChannelCreated}
+          onDeleteChannel={setDeleteChannel}
+          onProfile={() => setSelectedProfile(session.user)}
+          onSettings={() => setSettingsOpen(true)}
+          onLogout={handleLogout}
+          onError={setError}
+        />
       ) : null}
 
       {activeFeature === "chat" ? (
@@ -267,9 +374,8 @@ export function App() {
           <header className="chat-header">
             <div className="chat-title">
               <Hash size={22} />
-              <span>{session.channel.name}</span>
+              <span>{currentChannel.name}</span>
             </div>
-            <UpdateButton status={updateStatus} />
           </header>
 
           {error ? (
@@ -283,7 +389,7 @@ export function App() {
 
           <MessageList messages={messages} onProfile={setSelectedProfile} />
           <Composer
-            channelId={session.channel.id}
+            channel={currentChannel}
             socket={socketRef.current}
             onError={setError}
             onFallbackMessage={(message) =>
@@ -298,7 +404,6 @@ export function App() {
       ) : (
         <CalendarView
           events={calendarEvents}
-          updateStatus={updateStatus}
           onCreated={handleCalendarEventCreated}
           onUpdated={handleCalendarEventUpdated}
           onProfile={setSelectedProfile}
@@ -311,7 +416,7 @@ export function App() {
       {activeFeature === "chat" ? (
         <MembersPanel members={session.members} onProfile={setSelectedProfile} />
       ) : (
-        <CalendarSidePanel events={calendarEvents} />
+        <CalendarSidePanel events={calendarEvents} onProfile={setSelectedProfile} />
       )}
 
       {settingsOpen ? (
@@ -324,35 +429,132 @@ export function App() {
       ) : null}
 
       {selectedProfile ? (
-        <ProfileCard profile={selectedProfile} onClose={() => setSelectedProfile(null)} />
+        <ProfileCard
+          profile={selectedProfile}
+          viewer={session.user}
+          onClose={() => setSelectedProfile(null)}
+          onManaged={handleManagedProfile}
+          onBanned={enterBannedState}
+          onError={setError}
+        />
+      ) : null}
+      {deleteChannel ? (
+        <DeleteChannelModal
+          channel={deleteChannel}
+          onClose={() => setDeleteChannel(null)}
+          onDeleted={(channels) => {
+            handleChannelsChanged(channels);
+            setDeleteChannel(null);
+          }}
+          onError={setError}
+        />
       ) : null}
     </div>
+    </AppFrame>
+  );
+}
+
+function AppFrame({
+  updateStatus,
+  children
+}: {
+  updateStatus: UpdateStatus;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="desktop-frame">
+      <TitleBar updateStatus={updateStatus} />
+      {children}
+    </div>
+  );
+}
+
+function TitleBar({ updateStatus }: { updateStatus: UpdateStatus }) {
+  return (
+    <header className="titlebar">
+      <div className="titlebar-drag">
+        <span className="titlebar-mark">
+          <MessageCircle size={15} />
+        </span>
+        <span>GCChat</span>
+      </div>
+      <div className="titlebar-actions">
+        <UpdateButton status={updateStatus} />
+        <button className="window-button" onClick={() => window.gcchat.window.minimize()} aria-label="Minimize">
+          <Minus size={14} />
+        </button>
+        <button
+          className="window-button"
+          onClick={() => window.gcchat.window.toggleMaximize()}
+          aria-label="Maximize"
+        >
+          <span className="maximize-icon" />
+        </button>
+        <button className="window-button close" onClick={() => window.gcchat.window.close()} aria-label="Close">
+          <X size={15} />
+        </button>
+      </div>
+    </header>
   );
 }
 
 function UpdateButton({ status }: { status: UpdateStatus }) {
   if (status.phase === "downloaded") {
     return (
-      <button className="update-button ready" onClick={() => window.gcchat.updates.restartAndInstall()}>
+      <button
+        className="update-button ready"
+        onClick={() => window.gcchat.updates.restartAndInstall()}
+        title="Restart and install update"
+      >
         <Download size={16} />
-        Update Ready
+        Update
       </button>
     );
   }
 
-  if (status.phase === "downloading") {
+  if (status.phase === "downloading" || status.phase === "checking") {
     return (
-      <button className="update-button" disabled>
+      <button className="update-button" disabled title="Checking for updates">
         <Loader2 className="spin" size={15} />
-        Updating
+        {status.phase === "checking" ? "Check" : "Updating"}
       </button>
     );
   }
 
-  return null;
+  return (
+    <button
+      className="update-button"
+      onClick={() => void window.gcchat.updates.checkNow()}
+      title={status.message ?? "Check for updates"}
+    >
+      <RefreshCw size={15} />
+      Check
+    </button>
+  );
 }
 
-function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
+function BannedScreen({ onLogout }: { onLogout: () => void }) {
+  return (
+    <main className="banned-screen">
+      <section className="banned-card">
+        <Ban size={34} />
+        <h1>You are banned</h1>
+        <button className="primary-button" onClick={onLogout}>
+          <LogOut size={17} />
+          Log out
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function AuthScreen({
+  onAuth,
+  onBanned
+}: {
+  onAuth: (auth: AuthResponse) => void;
+  onBanned: () => void;
+}) {
   const [mode, setMode] = useState<"login" | "register">("register");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -371,7 +573,14 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
           : await api.login(username, password);
       onAuth(auth);
     } catch (requestError) {
-      setError(getMessage(requestError));
+      const message = getMessage(requestError);
+
+      if (message === "You are banned") {
+        onBanned();
+        return;
+      }
+
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -422,6 +631,136 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
         </button>
       </section>
     </main>
+  );
+}
+
+function ChannelSidebar({
+  session,
+  activeChannelId,
+  onChannelSelect,
+  onChannelCreated,
+  onDeleteChannel,
+  onProfile,
+  onSettings,
+  onLogout,
+  onError
+}: {
+  session: Session;
+  activeChannelId: string;
+  onChannelSelect: (channelId: string) => void;
+  onChannelCreated: (channel: ChannelSummary) => void;
+  onDeleteChannel: (channel: ChannelSummary) => void;
+  onProfile: () => void;
+  onSettings: () => void;
+  onLogout: () => void;
+  onError: (error: string | null) => void;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canCreateChannel = hasAtLeastRole(session.user.role, "ADMIN");
+  const canDeleteChannel = session.user.role === "SUPER_ADMIN" && session.channels.length > 1;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!name.trim() || busy) {
+      return;
+    }
+
+    setBusy(true);
+    onError(null);
+
+    try {
+      const channel = await api.createChannel({ name });
+      onChannelCreated(channel);
+      setName("");
+      setCreating(false);
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <aside className="channel-sidebar">
+      <div className="server-header">
+        <span>{session.server.name}</span>
+        <Sparkles size={16} />
+      </div>
+
+      <div className="channel-group">
+        <div className="channel-group-title channel-title-row">
+          <span>Text Channels</span>
+          {canCreateChannel ? (
+            <button
+              className="channel-title-action"
+              onClick={() => setCreating((current) => !current)}
+              aria-label="Create text channel"
+              title="Create text channel"
+            >
+              <Plus size={14} />
+            </button>
+          ) : null}
+        </div>
+
+        {creating ? (
+          <form className="channel-create-form" onSubmit={submit}>
+            <input
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="new-channel"
+              maxLength={32}
+            />
+            <button className="icon-button" disabled={busy || !name.trim()} aria-label="Create">
+              {busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+            </button>
+          </form>
+        ) : null}
+
+        <div className="channel-list">
+          {session.channels.map((channel) => (
+            <div className={`channel-row ${canDeleteChannel ? "can-delete" : ""}`} key={channel.id}>
+              <button
+                className={`channel-link ${channel.id === activeChannelId ? "active" : ""}`}
+                onClick={() => onChannelSelect(channel.id)}
+              >
+                <Hash size={18} />
+                <span>{channel.name}</span>
+              </button>
+              {canDeleteChannel ? (
+                <button
+                  className="channel-action"
+                  onClick={() => onDeleteChannel(channel)}
+                  aria-label={`Delete ${channel.name}`}
+                  title={`Delete ${channel.name}`}
+                >
+                  <Trash2 size={15} />
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="user-panel">
+        <button className="user-identity" onClick={onProfile}>
+          <Avatar profile={session.user} size="sm" status="online" />
+          <span>
+            <strong>{session.user.displayName}</strong>
+            <small>@{session.user.username}</small>
+          </span>
+        </button>
+        <button className="icon-button" onClick={onSettings} aria-label="Settings">
+          <Settings size={18} />
+        </button>
+        <button className="icon-button" onClick={onLogout} aria-label="Log out">
+          <LogOut size={18} />
+        </button>
+      </div>
+    </aside>
   );
 }
 
@@ -490,12 +829,12 @@ function MessageList({
 }
 
 function Composer({
-  channelId,
+  channel,
   socket,
   onError,
   onFallbackMessage
 }: {
-  channelId: string;
+  channel: ChannelSummary;
   socket: ChatSocket | null;
   onError: (error: string | null) => void;
   onFallbackMessage: (message: MessageView) => void;
@@ -530,7 +869,7 @@ function Composer({
       }
 
       const payload = {
-        channelId,
+        channelId: channel.id,
         content: draft,
         attachments
       };
@@ -538,7 +877,7 @@ function Composer({
       if (socket?.connected) {
         await emitMessage(socket, payload);
       } else {
-        const message = await api.createMessage(channelId, {
+        const message = await api.createMessage(channel.id, {
           content: payload.content,
           attachments
         });
@@ -585,7 +924,7 @@ function Composer({
         <input
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Message #general"
+          placeholder={`Message #${channel.name}`}
         />
       </div>
       <button className="send-button" disabled={!canSend || sending} aria-label="Send">
@@ -597,7 +936,6 @@ function Composer({
 
 function CalendarView({
   events,
-  updateStatus,
   onCreated,
   onUpdated,
   onProfile,
@@ -606,7 +944,6 @@ function CalendarView({
   onDismissError
 }: {
   events: CalendarEventView[];
-  updateStatus: UpdateStatus;
   onCreated: (event: CalendarEventView) => void;
   onUpdated: (event: CalendarEventView) => void;
   onProfile: (profile: UserProfile) => void;
@@ -621,14 +958,27 @@ function CalendarView({
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [busyEventId, setBusyEventId] = useState<string | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const calendarDays = useMemo(
     () => buildCalendarDays(visibleMonth, events),
     [events, visibleMonth]
   );
-  const upcomingEvents = useMemo(
-    () => events.slice().sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt)),
-    [events]
+  const selectedDayEvents = useMemo(
+    () =>
+      events
+        .filter((event) => toDateInputValue(new Date(event.startAt)) === selectedDate)
+        .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt)),
+    [events, selectedDate]
   );
+  const selectedEvent =
+    selectedDayEvents.find((event) => event.id === selectedEventId) ??
+    (selectedDayEvents.length === 1 ? selectedDayEvents[0] : null);
+
+  useEffect(() => {
+    if (selectedEventId && !selectedDayEvents.some((event) => event.id === selectedEventId)) {
+      setSelectedEventId(null);
+    }
+  }, [selectedDayEvents, selectedEventId]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -648,6 +998,7 @@ function CalendarView({
       });
 
       onCreated(created);
+      setSelectedEventId(created.id);
       setTitle("");
       setDescription("");
     } catch (requestError) {
@@ -680,7 +1031,6 @@ function CalendarView({
           <CalendarDays size={22} />
           <span>GC calendar</span>
         </div>
-        <UpdateButton status={updateStatus} />
       </header>
 
       {error ? (
@@ -732,6 +1082,7 @@ function CalendarView({
                 key={day.dateValue}
                 onClick={() => {
                   setSelectedDate(day.dateValue);
+                  setSelectedEventId(null);
 
                   if (!day.currentMonth) {
                     setVisibleMonth(startOfMonth(day.date));
@@ -791,21 +1142,41 @@ function CalendarView({
           </form>
 
           <div className="calendar-events">
-            {upcomingEvents.length === 0 ? (
+            {selectedEvent ? (
+              <>
+                {selectedDayEvents.length > 1 ? (
+                  <button className="text-button calendar-back-button" onClick={() => setSelectedEventId(null)}>
+                    Back to {selectedDayEvents.length} events
+                  </button>
+                ) : null}
+                <CalendarEventCard
+                  event={selectedEvent}
+                  busy={busyEventId === selectedEvent.id}
+                  onProfile={onProfile}
+                  onToggleOptIn={() => toggleOptIn(selectedEvent)}
+                />
+              </>
+            ) : selectedDayEvents.length > 1 ? (
+              <div className="calendar-day-event-list">
+                <h3>{formatDateLabel(selectedDate)} Events</h3>
+                {selectedDayEvents.map((event) => (
+                  <button
+                    className="calendar-day-event-row"
+                    key={event.id}
+                    onClick={() => setSelectedEventId(event.id)}
+                  >
+                    <span>{event.title}</span>
+                    <time>{formatTime(event.startAt)}</time>
+                  </button>
+                ))}
+              </div>
+            ) : selectedDayEvents.length === 0 ? (
               <div className="empty-calendar">
                 <CalendarDays size={30} />
-                <h3>No events yet</h3>
+                <h3>No events on this date</h3>
               </div>
             ) : (
-              upcomingEvents.map((event) => (
-                <CalendarEventCard
-                  event={event}
-                  key={event.id}
-                  busy={busyEventId === event.id}
-                  onProfile={onProfile}
-                  onToggleOptIn={() => toggleOptIn(event)}
-                />
-              ))
+              null
             )}
           </div>
         </div>
@@ -864,7 +1235,13 @@ function CalendarEventCard({
   );
 }
 
-function CalendarSidePanel({ events }: { events: CalendarEventView[] }) {
+function CalendarSidePanel({
+  events,
+  onProfile
+}: {
+  events: CalendarEventView[];
+  onProfile: (profile: UserProfile) => void;
+}) {
   const soon = events
     .slice()
     .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))
@@ -880,10 +1257,37 @@ function CalendarSidePanel({ events }: { events: CalendarEventView[] }) {
           <div className="agenda-row" key={event.id}>
             <strong>{event.title}</strong>
             <span>{formatShortEventDate(event.startAt)}</span>
+            <AttendeePreview event={event} onProfile={onProfile} />
           </div>
         ))
       )}
     </aside>
+  );
+}
+
+function AttendeePreview({
+  event,
+  onProfile
+}: {
+  event: CalendarEventView;
+  onProfile: (profile: UserProfile) => void;
+}) {
+  if (event.optIns.length === 0) {
+    return null;
+  }
+
+  const visible = event.optIns.slice(0, 3);
+  const overflow = event.optIns.length - visible.length;
+
+  return (
+    <div className="attendee-preview">
+      {visible.map((optIn) => (
+        <button key={optIn.user.id} onClick={() => onProfile(optIn.user)} title={optIn.user.displayName}>
+          <Avatar profile={optIn.user} size="xs" />
+        </button>
+      ))}
+      {overflow > 0 ? <span>+{overflow}</span> : null}
+    </div>
   );
 }
 
@@ -898,9 +1302,20 @@ function MembersPanel({
     <aside className="members-panel">
       <div className="members-title">Members</div>
       {members.map((member) => (
-        <button className="member-row" key={member.id} onClick={() => onProfile(member)}>
-          <Avatar profile={member} size="sm" />
+        <button
+          className={`member-row ${member.bannedAt ? "banned" : ""}`}
+          key={member.id}
+          onClick={() => onProfile(member)}
+        >
+          <Avatar
+            profile={member}
+            size="sm"
+            status={member.isOnline ? "online" : "offline"}
+            muted={Boolean(member.bannedAt)}
+          />
           <span>{member.displayName}</span>
+          {member.bannedAt ? <em>Banned</em> : null}
+          {member.role === "SUPER_ADMIN" ? <ShieldCheck size={14} /> : member.role === "ADMIN" ? <Shield size={14} /> : null}
         </button>
       ))}
     </aside>
@@ -1030,7 +1445,126 @@ function SettingsModal({
   );
 }
 
-function ProfileCard({ profile, onClose }: { profile: UserProfile; onClose: () => void }) {
+function DeleteChannelModal({
+  channel,
+  onClose,
+  onDeleted,
+  onError
+}: {
+  channel: ChannelSummary;
+  onClose: () => void;
+  onDeleted: (channels: ChannelSummary[]) => void;
+  onError: (error: string | null) => void;
+}) {
+  const [confirmationName, setConfirmationName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canDelete = confirmationName === channel.name;
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!canDelete || busy) {
+      return;
+    }
+
+    setBusy(true);
+    onError(null);
+
+    try {
+      const channels = await api.deleteChannel(channel.id, { confirmationName });
+      onDeleted(channels);
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <form className="confirm-modal" onSubmit={submit}>
+        <header>
+          <h2>Delete #{channel.name}</h2>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+            <X size={19} />
+          </button>
+        </header>
+        <p>Type <strong>{channel.name}</strong> to confirm.</p>
+        <input
+          autoFocus
+          value={confirmationName}
+          onChange={(event) => setConfirmationName(event.target.value)}
+          placeholder={channel.name}
+        />
+        <footer>
+          <button type="button" className="secondary-button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="secondary-button danger" disabled={!canDelete || busy}>
+            {busy ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+            Delete
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
+function ProfileCard({
+  profile,
+  viewer,
+  onClose,
+  onManaged,
+  onBanned,
+  onError
+}: {
+  profile: UserProfile;
+  viewer: UserProfile;
+  onClose: () => void;
+  onManaged: (profile: UserProfile) => void;
+  onBanned: () => void;
+  onError: (error: string | null) => void;
+}) {
+  const [busyAction, setBusyAction] = useState<"role" | "ban" | null>(null);
+  const canManage =
+    viewer.role === "SUPER_ADMIN" && viewer.id !== profile.id && profile.role !== "SUPER_ADMIN";
+
+  const updateRole = async () => {
+    setBusyAction("role");
+    onError(null);
+
+    try {
+      const updated = await api.updateUserRole(profile.id, {
+        role: profile.role === "ADMIN" ? "USER" : "ADMIN"
+      });
+      onManaged(updated);
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const updateBan = async () => {
+    setBusyAction("ban");
+    onError(null);
+
+    try {
+      const updated = await api.updateUserBan(profile.id, {
+        banned: !profile.bannedAt
+      });
+      onManaged(updated);
+
+      if (updated.id === viewer.id && updated.bannedAt) {
+        onBanned();
+      }
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   return (
     <div className="profile-layer" onMouseDown={onClose}>
       <article className="profile-card" onMouseDown={(event) => event.stopPropagation()}>
@@ -1039,8 +1573,22 @@ function ProfileCard({ profile, onClose }: { profile: UserProfile; onClose: () =
         </button>
         <div className="profile-banner" />
         <div className="profile-content">
-          <Avatar profile={profile} size="lg" />
-          <h2>{profile.displayName}</h2>
+          <Avatar profile={profile} size="lg" muted={Boolean(profile.bannedAt)} />
+          <div className="profile-heading">
+            <h2>{profile.displayName}</h2>
+            {profile.bannedAt ? <span className="banned-badge">Banned</span> : null}
+            {profile.role === "SUPER_ADMIN" ? (
+              <span className="role-badge super">
+                <ShieldCheck size={13} />
+                Super Admin
+              </span>
+            ) : profile.role === "ADMIN" ? (
+              <span className="role-badge">
+                <Shield size={13} />
+                Admin
+              </span>
+            ) : null}
+          </div>
           <div className="profile-username">
             <AtSign size={14} />
             {profile.username}
@@ -1053,18 +1601,46 @@ function ProfileCard({ profile, onClose }: { profile: UserProfile; onClose: () =
             <h3>About Me</h3>
             <p>{profile.bio || "No bio yet."}</p>
           </section>
+          {canManage ? (
+            <section className="profile-actions">
+              <h3>Moderation</h3>
+              <button className="secondary-button" onClick={updateRole} disabled={busyAction !== null}>
+                {busyAction === "role" ? <Loader2 className="spin" size={15} /> : <Shield size={15} />}
+                {profile.role === "ADMIN" ? "Remove Admin" : "Give Admin"}
+              </button>
+              <button
+                className={`secondary-button danger ${profile.bannedAt ? "safe" : ""}`}
+                onClick={updateBan}
+                disabled={busyAction !== null}
+              >
+                {busyAction === "ban" ? <Loader2 className="spin" size={15} /> : <Ban size={15} />}
+                {profile.bannedAt ? "Unban User" : "Ban User"}
+              </button>
+            </section>
+          ) : null}
         </div>
       </article>
     </div>
   );
 }
 
-function Avatar({ profile, size }: { profile: UserProfile; size: "sm" | "md" | "lg" | "xl" }) {
+function Avatar({
+  profile,
+  size,
+  status,
+  muted = false
+}: {
+  profile: UserProfile;
+  size: "xs" | "sm" | "md" | "lg" | "xl";
+  status?: "online" | "offline";
+  muted?: boolean;
+}) {
   const initials = (profile.displayName || profile.username).slice(0, 2).toUpperCase();
 
   return (
-    <span className={`avatar avatar-${size}`}>
+    <span className={`avatar avatar-${size} ${muted ? "avatar-muted" : ""}`}>
       {profile.avatarUrl ? <img src={profile.avatarUrl} alt="" /> : <span>{initials}</span>}
+      {status ? <i className={`presence-dot ${status}`} /> : null}
     </span>
   );
 }
@@ -1171,11 +1747,31 @@ function combineDateAndTime(dateValue: string, timeValue: string) {
   );
 }
 
+function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {
+  const rank: Record<UserRole, number> = {
+    USER: 0,
+    ADMIN: 1,
+    SUPER_ADMIN: 2
+  };
+
+  return rank[role] >= rank[minimum];
+}
+
 function formatTime(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function formatDateLabel(dateValue: string) {
+  const [year = "1970", month = "01", day = "01"] = dateValue.split("-");
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    year: "numeric"
+  }).format(new Date(Number(year), Number(month) - 1, Number(day)));
 }
 
 function formatDate(value: string) {

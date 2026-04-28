@@ -5,13 +5,18 @@ import {
   type BootstrapPayload,
   type CalendarEventView,
   type ChannelSummary,
+  type CreateChannelRequest,
   type CreateCalendarEventRequest,
   type CreateMessageRequest,
+  type DeleteChannelRequest,
   type MessageView,
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
+  type UpdateUserBanRequest,
   type UpdateProfileRequest,
+  type UpdateUserRoleRequest,
+  type UserRole,
   type UserProfile
 } from "@gcchat/shared";
 import type {
@@ -19,11 +24,14 @@ import type {
   GlobalCommunity,
   UserAuthRecord
 } from "../src/repositories/chatRepository";
+import { HttpError } from "../src/errors";
 
 interface StoredUser {
   id: string;
   username: string;
   passwordHash: string;
+  role: UserRole;
+  bannedAt: Date | null;
   createdAt: Date;
 }
 
@@ -73,11 +81,11 @@ export class InMemoryChatRepository implements ChatRepository {
     iconUrl: null
   };
 
-  private readonly channel: ChannelSummary = {
+  private readonly channels: ChannelSummary[] = [{
     id: "channel-general",
     serverId: this.server.id,
     name: GLOBAL_CHANNEL_NAME
-  };
+  }];
 
   private readonly users = new Map<string, StoredUser>();
   private readonly profiles = new Map<string, StoredProfile>();
@@ -86,7 +94,7 @@ export class InMemoryChatRepository implements ChatRepository {
   private readonly calendarEvents: StoredCalendarEvent[] = [];
 
   public async ensureGlobalCommunity(): Promise<GlobalCommunity> {
-    return { server: this.server, channel: this.channel };
+    return { server: this.server, channel: this.channels[0] };
   }
 
   public async createUser(input: { username: string; passwordHash: string }) {
@@ -94,6 +102,8 @@ export class InMemoryChatRepository implements ChatRepository {
       id: randomUUID(),
       username: input.username,
       passwordHash: input.passwordHash,
+      role: this.users.size === 0 ? "SUPER_ADMIN" : "USER",
+      bannedAt: null,
       createdAt: new Date()
     };
 
@@ -111,7 +121,14 @@ export class InMemoryChatRepository implements ChatRepository {
 
   public async findUserAuthByUsername(username: string): Promise<UserAuthRecord | null> {
     const user = [...this.users.values()].find((candidate) => candidate.username === username);
-    return user ? { id: user.id, username: user.username, passwordHash: user.passwordHash } : null;
+    return user
+      ? {
+          id: user.id,
+          username: user.username,
+          passwordHash: user.passwordHash,
+          bannedAt: user.bannedAt?.toISOString() ?? null
+        }
+      : null;
   }
 
   public async getBootstrap(userId: string): Promise<BootstrapPayload> {
@@ -125,7 +142,8 @@ export class InMemoryChatRepository implements ChatRepository {
     return {
       user,
       server: this.server,
-      channel: this.channel,
+      channel: this.channels[0],
+      channels: await this.listChannels(this.server.id),
       members: await this.listServerMembers(this.server.id)
     };
   }
@@ -170,8 +188,113 @@ export class InMemoryChatRepository implements ChatRepository {
           throw new Error("Missing user");
         }
 
-        return { ...this.mapUser(user), joinedAt: membership.joinedAt.toISOString() };
+        return {
+          ...this.mapUser(user),
+          joinedAt: membership.joinedAt.toISOString(),
+          isOnline: false
+        };
       });
+  }
+
+  public async listChannels(serverId: string): Promise<ChannelSummary[]> {
+    return this.channels.filter((channel) => channel.serverId === serverId);
+  }
+
+  public async createChannel(
+    input: { serverId: string; actorId: string } & CreateChannelRequest
+  ): Promise<ChannelSummary> {
+    await this.assertAdmin(input.actorId);
+    const name = normalizeChannelName(input.name);
+
+    if (!name) {
+      throw new HttpError(400, "Channel name is required");
+    }
+
+    if (this.channels.some((channel) => channel.serverId === input.serverId && channel.name === name)) {
+      throw new HttpError(409, "A channel with that name already exists");
+    }
+
+    const channel = {
+      id: randomUUID(),
+      serverId: input.serverId,
+      name
+    };
+
+    this.channels.push(channel);
+    return channel;
+  }
+
+  public async deleteChannel(
+    channelId: string,
+    input: { actorId: string } & DeleteChannelRequest
+  ): Promise<ChannelSummary[]> {
+    await this.assertSuperAdmin(input.actorId);
+    const channel = this.channels.find((candidate) => candidate.id === channelId);
+
+    if (!channel) {
+      throw new HttpError(404, "Channel not found");
+    }
+
+    if (input.confirmationName !== channel.name) {
+      throw new HttpError(400, "Type the channel name exactly to delete it");
+    }
+
+    const serverChannels = this.channels.filter((candidate) => candidate.serverId === channel.serverId);
+
+    if (serverChannels.length <= 1) {
+      throw new HttpError(400, "You cannot delete the last text channel");
+    }
+
+    this.channels.splice(this.channels.indexOf(channel), 1);
+    return this.listChannels(channel.serverId);
+  }
+
+  public async setUserRole(
+    targetUserId: string,
+    input: { actorId: string } & UpdateUserRoleRequest
+  ): Promise<UserProfile> {
+    await this.assertSuperAdmin(input.actorId);
+
+    const target = this.users.get(targetUserId);
+
+    if (!target) {
+      throw new HttpError(404, "User not found");
+    }
+
+    if (targetUserId === input.actorId) {
+      throw new HttpError(400, "You cannot change your own role");
+    }
+
+    if (target.role === "SUPER_ADMIN") {
+      throw new HttpError(400, "Super admins cannot be changed here");
+    }
+
+    target.role = input.role;
+    return this.mapUser(target);
+  }
+
+  public async setUserBan(
+    targetUserId: string,
+    input: { actorId: string } & UpdateUserBanRequest
+  ): Promise<UserProfile> {
+    await this.assertSuperAdmin(input.actorId);
+
+    const target = this.users.get(targetUserId);
+
+    if (!target) {
+      throw new HttpError(404, "User not found");
+    }
+
+    if (targetUserId === input.actorId) {
+      throw new HttpError(400, "You cannot ban yourself");
+    }
+
+    if (target.role === "SUPER_ADMIN") {
+      throw new HttpError(400, "Super admins cannot be banned");
+    }
+
+    target.bannedAt = input.banned ? new Date() : null;
+    return this.mapUser(target);
   }
 
   public async userHasServerAccess(userId: string, serverId: string) {
@@ -181,7 +304,8 @@ export class InMemoryChatRepository implements ChatRepository {
   }
 
   public async userHasChannelAccess(userId: string, channelId: string) {
-    return channelId === this.channel.id && (await this.userHasServerAccess(userId, this.server.id));
+    const channel = this.channels.find((candidate) => candidate.id === channelId);
+    return Boolean(channel) && (await this.userHasServerAccess(userId, this.server.id));
   }
 
   public async listMessages(channelId: string, limit: number): Promise<MessageView[]> {
@@ -269,7 +393,9 @@ export class InMemoryChatRepository implements ChatRepository {
       displayName: profile?.displayName ?? user.username,
       bio: profile?.bio ?? "",
       avatarUrl: profile?.avatarUrl ?? null,
-      createdAt: user.createdAt.toISOString()
+      createdAt: user.createdAt.toISOString(),
+      role: user.role,
+      bannedAt: user.bannedAt?.toISOString() ?? null
     };
   }
 
@@ -320,4 +446,29 @@ export class InMemoryChatRepository implements ChatRepository {
       viewerOptedIn: event.optInUserIds.has(viewerId)
     };
   }
+
+  private async assertAdmin(userId: string) {
+    const user = this.users.get(userId);
+
+    if (!user || (user.role !== "ADMIN" && user.role !== "SUPER_ADMIN")) {
+      throw new HttpError(403, "Admin permission required");
+    }
+  }
+
+  private async assertSuperAdmin(userId: string) {
+    const user = this.users.get(userId);
+
+    if (!user || user.role !== "SUPER_ADMIN") {
+      throw new HttpError(403, "Super admin permission required");
+    }
+  }
+}
+
+function normalizeChannelName(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
 }

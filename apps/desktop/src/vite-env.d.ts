@@ -24,5 +24,10 @@ interface Window {
       restartAndInstall: () => Promise<void>;
       onStatus: (callback: (status: UpdateStatus) => void) => () => void;
     };
+    window: {
+      minimize: () => Promise<void>;
+      toggleMaximize: () => Promise<void>;
+      close: () => Promise<void>;
+    };
   };
 }

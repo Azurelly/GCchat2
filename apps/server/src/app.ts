@@ -2,9 +2,10 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import type {
+  ChannelSummary,
+  CalendarEventView,
   MessageView,
   ServerMemberView,
-  CalendarEventView,
   UpdateProfileRequest,
   UploadKind,
   UserProfile
@@ -23,17 +24,23 @@ import type { ChatRepository } from "./repositories/chatRepository";
 import type { AssetStorage } from "./storage";
 import {
   createCalendarEventSchema,
+  createChannelSchema,
   createMessageSchema,
+  deleteChannelSchema,
   loginSchema,
   registerSchema,
   setCalendarEventOptInSchema,
-  updateProfileSchema
+  updateUserBanSchema,
+  updateProfileSchema,
+  updateUserRoleSchema
 } from "./validation";
 
 export interface RealtimePublisher {
   emitMessage(message: MessageView): void;
   emitProfileUpdated(profile: UserProfile): void;
   emitMembersUpdated(serverId: string, members: ServerMemberView[]): void;
+  emitChannelsUpdated(serverId: string, channels: ChannelSummary[]): void;
+  emitSessionBanned(userId: string): void;
   emitCalendarEvent(event: CalendarEventView): void;
 }
 
@@ -100,6 +107,10 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
         throw new HttpError(401, "Invalid username or password");
       }
 
+      if (user.bannedAt) {
+        throw new HttpError(403, "You are banned");
+      }
+
       const bootstrap = await repo.getBootstrap(user.id);
       const token = signAuthToken(user, env.jwtSecret);
 
@@ -108,6 +119,7 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
   );
 
   app.use(requireAuth(env.jwtSecret));
+  app.use(requireActiveUser(repo));
 
   app.get(
     "/me",
@@ -155,6 +167,41 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
     })
   );
 
+  app.post(
+    "/channels",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const parsed = createChannelSchema.parse(req.body);
+      const bootstrap = await repo.getBootstrap(user.id);
+      const channel = await repo.createChannel({
+        serverId: bootstrap.server.id,
+        actorId: user.id,
+        name: parsed.name
+      });
+      const channels = await repo.listChannels(bootstrap.server.id);
+
+      realtime?.emitChannelsUpdated(bootstrap.server.id, channels);
+      res.status(201).json(channel);
+    })
+  );
+
+  app.delete(
+    "/channels/:id",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const channelId = requiredParam(req, "id");
+      const parsed = deleteChannelSchema.parse(req.body);
+      const bootstrap = await repo.getBootstrap(user.id);
+      const channels = await repo.deleteChannel(channelId, {
+        actorId: user.id,
+        confirmationName: parsed.confirmationName
+      });
+
+      realtime?.emitChannelsUpdated(bootstrap.server.id, channels);
+      res.json(channels);
+    })
+  );
+
   app.get(
     "/channels/:id/messages",
     asyncRoute(async (req, res) => {
@@ -166,6 +213,49 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
       }
 
       res.json(await repo.listMessages(channelId, parseMessageLimit(req.query.limit)));
+    })
+  );
+
+  app.patch(
+    "/users/:id/role",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const targetId = requiredParam(req, "id");
+      const parsed = updateUserRoleSchema.parse(req.body);
+      const profile = await repo.setUserRole(targetId, {
+        actorId: user.id,
+        role: parsed.role
+      });
+      const bootstrap = await repo.getBootstrap(user.id);
+      const members = await repo.listServerMembers(bootstrap.server.id);
+
+      realtime?.emitProfileUpdated(profile);
+      realtime?.emitMembersUpdated(bootstrap.server.id, members);
+      res.json(profile);
+    })
+  );
+
+  app.patch(
+    "/users/:id/ban",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const targetId = requiredParam(req, "id");
+      const parsed = updateUserBanSchema.parse(req.body);
+      const profile = await repo.setUserBan(targetId, {
+        actorId: user.id,
+        banned: parsed.banned
+      });
+      const bootstrap = await repo.getBootstrap(user.id);
+      const members = await repo.listServerMembers(bootstrap.server.id);
+
+      realtime?.emitProfileUpdated(profile);
+      realtime?.emitMembersUpdated(bootstrap.server.id, members);
+
+      if (parsed.banned) {
+        realtime?.emitSessionBanned(targetId);
+      }
+
+      res.json(profile);
     })
   );
 
@@ -273,6 +363,22 @@ function requireAuth(jwtSecret: string) {
       next(error);
     }
   };
+}
+
+function requireActiveUser(repo: ChatRepository) {
+  return asyncRoute(async (req, _res, next) => {
+    const profile = await repo.getProfile((req as AuthedRequest).user.id);
+
+    if (!profile) {
+      throw new HttpError(401, "Invalid or expired session");
+    }
+
+    if (profile.bannedAt) {
+      throw new HttpError(403, "You are banned");
+    }
+
+    next();
+  });
 }
 
 function parseMessageLimit(limit: unknown) {

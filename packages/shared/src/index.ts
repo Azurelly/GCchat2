@@ -2,6 +2,7 @@ export const GLOBAL_SERVER_NAME = "GCChat";
 export const GLOBAL_CHANNEL_NAME = "general";
 
 export type UploadKind = "avatar" | "attachment";
+export type UserRole = "USER" | "ADMIN" | "SUPER_ADMIN";
 
 export interface ApiErrorResponse {
   error: string;
@@ -15,6 +16,8 @@ export interface UserProfile {
   bio: string;
   avatarUrl: string | null;
   createdAt: string;
+  role: UserRole;
+  bannedAt: string | null;
 }
 
 export interface ServerSummary {
@@ -31,6 +34,7 @@ export interface ChannelSummary {
 
 export interface ServerMemberView extends UserProfile {
   joinedAt: string;
+  isOnline: boolean;
 }
 
 export interface AttachmentView {
@@ -71,6 +75,7 @@ export interface BootstrapPayload {
   user: UserProfile;
   server: ServerSummary;
   channel: ChannelSummary;
+  channels: ChannelSummary[];
   members: ServerMemberView[];
 }
 
@@ -112,6 +117,22 @@ export interface CreateMessageRequest {
   }>;
 }
 
+export interface CreateChannelRequest {
+  name: string;
+}
+
+export interface DeleteChannelRequest {
+  confirmationName: string;
+}
+
+export interface UpdateUserRoleRequest {
+  role: Extract<UserRole, "USER" | "ADMIN">;
+}
+
+export interface UpdateUserBanRequest {
+  banned: boolean;
+}
+
 export interface CreateCalendarEventRequest {
   title: string;
   description?: string;
@@ -137,5 +158,7 @@ export interface ServerToClientEvents {
   "message:new": (message: MessageView) => void;
   "profile:updated": (profile: UserProfile) => void;
   "members:updated": (members: ServerMemberView[]) => void;
+  "channels:updated": (channels: ChannelSummary[]) => void;
+  "session:banned": () => void;
   "calendar:event:upsert": (event: CalendarEventView) => void;
 }

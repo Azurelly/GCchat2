@@ -18,3 +18,9 @@ Calendar MVP behavior:
 - The event creator is automatically opted in when creating an event.
 - Calendar data is persisted in Postgres and updates live through the app's websocket refresh path.
 
+Permissions model:
+
+- The first account in a fresh database is promoted to Super Admin automatically.
+- Admins can create text channels in the Chat feature.
+- Super Admins can create/delete text channels, ban/unban accounts, and grant/remove Admin.
+- Banned users stay visible in member lists with disabled-looking styling, but cannot use the app.

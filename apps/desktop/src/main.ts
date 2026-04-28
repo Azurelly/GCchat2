@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, autoUpdater, BrowserWindow, ipcMain, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, ipcMain, Menu, shell } from "electron";
 import started from "electron-squirrel-startup";
 import releaseConfig from "../../../release.config.json";
 
@@ -32,12 +32,15 @@ let updateStatus: UpdateStatus = { phase: "idle", canRestart: false };
 let updatesConfigured = false;
 
 const createWindow = () => {
+  Menu.setApplicationMenu(null);
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 1040,
     minHeight: 680,
     backgroundColor: "#313338",
+    frame: false,
     title: "GCChat",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -90,6 +93,28 @@ ipcMain.handle("updates:restart-and-install", () => {
   if (updateStatus.canRestart) {
     autoUpdater.quitAndInstall();
   }
+});
+
+ipcMain.handle("window:minimize", () => {
+  BrowserWindow.getFocusedWindow()?.minimize();
+});
+
+ipcMain.handle("window:toggle-maximize", () => {
+  const window = BrowserWindow.getFocusedWindow();
+
+  if (!window) {
+    return;
+  }
+
+  if (window.isMaximized()) {
+    window.unmaximize();
+  } else {
+    window.maximize();
+  }
+});
+
+ipcMain.handle("window:close", () => {
+  BrowserWindow.getFocusedWindow()?.close();
 });
 
 function setupAutoUpdates() {

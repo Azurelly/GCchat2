@@ -66,4 +66,4 @@ CI lessons already learned:
 - If a release only shows `Source code (zip)` and `Source code (tar.gz)`, that is a tag, not the packaged app release. The installer release is created by Actions.
 - If the workflow fails in `Publish desktop release` with branch or npm publish errors, check that the command is using Electron Forge through `pnpm --filter @gcchat/desktop run publish`.
 
-Installed production builds use Electron's updater against GitHub Releases. The app exposes update status through the preload bridge and shows the update button in the chat header.
+Installed production builds use Electron's updater against GitHub Releases. The app exposes update status through the preload bridge and shows update controls in the custom Electron title bar. When no update is ready yet, show a small manual `Check` button; when an update has downloaded, replace it with a small `Update` button that restarts and installs.

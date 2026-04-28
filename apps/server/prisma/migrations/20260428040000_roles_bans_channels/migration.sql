@@ -1,0 +1,13 @@
+CREATE TYPE "UserRole" AS ENUM ('USER', 'ADMIN', 'SUPER_ADMIN');
+
+ALTER TABLE "User" ADD COLUMN "role" "UserRole" NOT NULL DEFAULT 'USER';
+ALTER TABLE "User" ADD COLUMN "bannedAt" TIMESTAMP(3);
+
+UPDATE "User"
+SET "role" = 'SUPER_ADMIN'
+WHERE "id" = (
+  SELECT "id"
+  FROM "User"
+  ORDER BY "createdAt" ASC
+  LIMIT 1
+);

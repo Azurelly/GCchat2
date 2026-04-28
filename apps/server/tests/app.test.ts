@@ -129,6 +129,109 @@ describe("messages API", () => {
   });
 });
 
+describe("role and moderation API", () => {
+  it("lets admins create channels and only super admins delete them", async () => {
+    const { app } = makeApp();
+    const owner = await request(app)
+      .post("/auth/register")
+      .send({ username: "Owner", password: "password123" })
+      .expect(201);
+    const friend = await request(app)
+      .post("/auth/register")
+      .send({ username: "Friend", password: "password123" })
+      .expect(201);
+
+    expect(owner.body.user.role).toBe("SUPER_ADMIN");
+
+    await request(app)
+      .post("/channels")
+      .set("authorization", `Bearer ${friend.body.token}`)
+      .send({ name: "plans" })
+      .expect(403);
+
+    const promoted = await request(app)
+      .patch(`/users/${friend.body.user.id}/role`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ role: "ADMIN" })
+      .expect(200);
+
+    expect(promoted.body.role).toBe("ADMIN");
+
+    const created = await request(app)
+      .post("/channels")
+      .set("authorization", `Bearer ${friend.body.token}`)
+      .send({ name: "Food Plans" })
+      .expect(201);
+
+    expect(created.body.name).toBe("food-plans");
+
+    await request(app)
+      .delete(`/channels/${created.body.id}`)
+      .set("authorization", `Bearer ${friend.body.token}`)
+      .send({ confirmationName: "food-plans" })
+      .expect(403);
+
+    await request(app)
+      .delete(`/channels/${created.body.id}`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ confirmationName: "wrong-name" })
+      .expect(400);
+
+    const channels = await request(app)
+      .delete(`/channels/${created.body.id}`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ confirmationName: "food-plans" })
+      .expect(200);
+
+    expect(channels.body.map((channel: { name: string }) => channel.name)).toEqual(["general"]);
+  });
+
+  it("bans users from future logins and authenticated requests until unbanned", async () => {
+    const { app } = makeApp();
+    const owner = await request(app)
+      .post("/auth/register")
+      .send({ username: "Owner", password: "password123" })
+      .expect(201);
+    const target = await request(app)
+      .post("/auth/register")
+      .send({ username: "Target", password: "password123" })
+      .expect(201);
+
+    const banned = await request(app)
+      .patch(`/users/${target.body.user.id}/ban`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ banned: true })
+      .expect(200);
+
+    expect(banned.body.bannedAt).toEqual(expect.any(String));
+
+    const login = await request(app)
+      .post("/auth/login")
+      .send({ username: "target", password: "password123" })
+      .expect(403);
+
+    expect(login.body.error).toBe("You are banned");
+
+    await request(app)
+      .get("/me")
+      .set("authorization", `Bearer ${target.body.token}`)
+      .expect(403);
+
+    const unbanned = await request(app)
+      .patch(`/users/${target.body.user.id}/ban`)
+      .set("authorization", `Bearer ${owner.body.token}`)
+      .send({ banned: false })
+      .expect(200);
+
+    expect(unbanned.body.bannedAt).toBeNull();
+
+    await request(app)
+      .post("/auth/login")
+      .send({ username: "target", password: "password123" })
+      .expect(200);
+  });
+});
+
 describe("calendar API", () => {
   it("creates calendar events, shows the creator, and lets other users opt in", async () => {
     const { app } = makeApp();

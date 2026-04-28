@@ -2,13 +2,17 @@ import type {
   BootstrapPayload,
   CalendarEventView,
   ChannelSummary,
+  CreateChannelRequest,
   CreateCalendarEventRequest,
   CreateMessageRequest,
+  DeleteChannelRequest,
   MessageView,
   SetCalendarEventOptInRequest,
   ServerMemberView,
   ServerSummary,
+  UpdateUserBanRequest,
   UpdateProfileRequest,
+  UpdateUserRoleRequest,
   UserProfile
 } from "@gcchat/shared";
 
@@ -16,6 +20,7 @@ export interface UserAuthRecord {
   id: string;
   username: string;
   passwordHash: string;
+  bannedAt: string | null;
 }
 
 export interface GlobalCommunity {
@@ -31,6 +36,22 @@ export interface ChatRepository {
   getProfile(userId: string): Promise<UserProfile | null>;
   updateProfile(userId: string, input: UpdateProfileRequest): Promise<UserProfile>;
   listServerMembers(serverId: string): Promise<ServerMemberView[]>;
+  listChannels(serverId: string): Promise<ChannelSummary[]>;
+  createChannel(
+    input: { serverId: string; actorId: string } & CreateChannelRequest
+  ): Promise<ChannelSummary>;
+  deleteChannel(
+    channelId: string,
+    input: { actorId: string } & DeleteChannelRequest
+  ): Promise<ChannelSummary[]>;
+  setUserRole(
+    targetUserId: string,
+    input: { actorId: string } & UpdateUserRoleRequest
+  ): Promise<UserProfile>;
+  setUserBan(
+    targetUserId: string,
+    input: { actorId: string } & UpdateUserBanRequest
+  ): Promise<UserProfile>;
   userHasServerAccess(userId: string, serverId: string): Promise<boolean>;
   userHasChannelAccess(userId: string, channelId: string): Promise<boolean>;
   listMessages(channelId: string, limit: number): Promise<MessageView[]>;
