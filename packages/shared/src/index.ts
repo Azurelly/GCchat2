@@ -150,6 +150,43 @@ export interface VoiceTokenResponse {
   identity: string;
 }
 
+export type VoiceConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected"
+  | "failed";
+
+export interface VoiceParticipantState {
+  userId: string;
+  selfMuted: boolean;
+  selfDeafened: boolean;
+  serverMuted: boolean;
+  serverDeafened: boolean;
+  screenSharing: boolean;
+  reconnecting: boolean;
+  joinedAt: string;
+  updatedAt: string;
+}
+
+export interface VoiceStateView {
+  channelName: string;
+  participants: VoiceParticipantState[];
+}
+
+export interface VoiceSelfStateRequest {
+  selfMuted?: boolean;
+  selfDeafened?: boolean;
+  screenSharing?: boolean;
+}
+
+export interface VoiceModerationRequest {
+  targetUserId: string;
+  serverMuted?: boolean;
+  serverDeafened?: boolean;
+  disconnect?: boolean;
+}
+
 export interface RegisterRequest {
   username: string;
   password: string;
@@ -242,6 +279,18 @@ export interface ClientToServerEvents {
     payload: { channelId: string } & CreateMessageRequest,
     ack?: (response: { ok: true; message: MessageView } | { ok: false; error: string }) => void
   ) => void;
+  "voice:join": (
+    ack?: (response: { ok: true; state: VoiceStateView } | { ok: false; error: string }) => void
+  ) => void;
+  "voice:leave": (ack?: (response: { ok: true } | { ok: false; error: string }) => void) => void;
+  "voice:self-state": (
+    payload: VoiceSelfStateRequest,
+    ack?: (response: { ok: true; state: VoiceStateView } | { ok: false; error: string }) => void
+  ) => void;
+  "voice:moderate": (
+    payload: VoiceModerationRequest,
+    ack?: (response: { ok: true; state: VoiceStateView } | { ok: false; error: string }) => void
+  ) => void;
 }
 
 export interface ServerToClientEvents {
@@ -256,4 +305,7 @@ export interface ServerToClientEvents {
   "calendar:event:deleted": (payload: { id: string }) => void;
   "audit:new": (entry: AuditLogView) => void;
   "emojis:updated": (emojis: CustomEmojiView[]) => void;
+  "voice:state": (state: VoiceStateView) => void;
+  "voice:moderated": (state: VoiceParticipantState) => void;
+  "voice:force-disconnect": () => void;
 }

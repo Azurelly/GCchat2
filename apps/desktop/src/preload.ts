@@ -16,5 +16,9 @@ contextBridge.exposeInMainWorld("gcchat", {
     minimize: () => ipcRenderer.invoke("window:minimize"),
     toggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
     close: () => ipcRenderer.invoke("window:close")
+  },
+  screens: {
+    getSources: () => ipcRenderer.invoke("screens:get-sources"),
+    selectSource: (sourceId: string) => ipcRenderer.invoke("screens:select-source", sourceId)
   }
 });

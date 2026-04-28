@@ -28,6 +28,8 @@ import {
   Loader2,
   LogOut,
   MessageCircle,
+  MonitorUp,
+  MonitorX,
   Mic,
   MicOff,
   Minus,
@@ -52,6 +54,7 @@ import {
   Upload,
   User,
   Volume2,
+  VolumeX,
   Users,
   X
 } from "lucide-react";
@@ -59,6 +62,7 @@ import {
   Room,
   RoomEvent,
   Track,
+  type LocalTrack,
   type Participant,
   type RemoteParticipant,
   type RemoteTrack,
@@ -78,13 +82,18 @@ import type {
   ServerToClientEvents,
   ClientToServerEvents,
   UserRole,
-  UserProfile
+  UserProfile,
+  VoiceModerationRequest,
+  VoiceSelfStateRequest,
+  VoiceStateView
 } from "@gcchat/shared";
 import { API_URL, ApiClient } from "./api";
 
 const tokenStorageKey = "gcchat.token";
 const notificationStorageKey = "gcchat.notification-preferences";
 const appearanceStorageKey = "gcchat.appearance-preferences";
+const voiceVolumeStorageKey = "gcchat.voice-volumes";
+const localVoiceMuteStorageKey = "gcchat.local-voice-mutes";
 const eventTokenPattern = /\[\[gc-event:([^\]]+)]]/g;
 
 const defaultEmojis = [
@@ -126,7 +135,7 @@ type ThemeName = "dark" | "light" | "midnight" | "forest" | "berry";
 type NotificationSound = "ping" | "chime" | "alert" | "none";
 type DefaultEmoji = (typeof defaultEmojis)[number];
 type CalendarEventsStatus = "idle" | "loading" | "ready" | "error";
-type VoiceStatus = "idle" | "connecting" | "connected" | "error";
+type VoiceStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
 
 interface NotificationPreferences {
   mentionToasts: boolean;
@@ -145,12 +154,28 @@ interface Session extends BootstrapPayload {
 }
 
 interface VoiceParticipantView {
-  identity: string;
+  userId: string;
   name: string;
   isLocal: boolean;
   isMuted: boolean;
+  isDeafened: boolean;
+  isServerMuted: boolean;
+  isServerDeafened: boolean;
   isSpeaking: boolean;
+  isScreenSharing: boolean;
+  reconnecting: boolean;
   profile: UserProfile | null;
+  volume: number;
+  locallyMuted: boolean;
+}
+
+interface ScreenShareView {
+  userId: string;
+  name: string;
+  isLocal: boolean;
+  profile: UserProfile | null;
+  track: LocalTrack | RemoteTrack | null;
+  status: "starting" | "live" | "ended" | "unavailable";
 }
 
 const api = new ApiClient();
@@ -182,9 +207,21 @@ export function App() {
   const [toasts, setToasts] = useState<Array<{ id: string; message: MessageView }>>([]);
   const [socket, setSocket] = useState<ChatSocket | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
-  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("disconnected");
+  const [voiceServerState, setVoiceServerState] = useState<VoiceStateView>({
+    channelName: "General Voice",
+    participants: []
+  });
   const [voiceParticipants, setVoiceParticipants] = useState<VoiceParticipantView[]>([]);
   const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voiceDeafened, setVoiceDeafened] = useState(false);
+  const [voiceSharing, setVoiceSharing] = useState(false);
+  const [screenShares, setScreenShares] = useState<ScreenShareView[]>([]);
+  const [selectedStreamUserId, setSelectedStreamUserId] = useState<string | null>(null);
+  const [screenSourcePicker, setScreenSourcePicker] = useState<ScreenSourcePreview[] | null>(null);
+  const screenSourceResolverRef = useRef<((source: ScreenSourcePreview | null) => void) | null>(null);
+  const [voiceVolumes, setVoiceVolumes] = useState(loadVoiceVolumes);
+  const [locallyMutedVoiceUsers, setLocallyMutedVoiceUsers] = useState(loadLocalVoiceMutes);
   const voiceRoomRef = useRef<Room | null>(null);
   const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
   const activeChannel = useMemo(() => {
@@ -263,6 +300,14 @@ export function App() {
     localStorage.setItem(appearanceStorageKey, JSON.stringify(appearancePrefs));
   }, [appearancePrefs]);
 
+  useEffect(() => {
+    localStorage.setItem(voiceVolumeStorageKey, JSON.stringify(voiceVolumes));
+  }, [voiceVolumes]);
+
+  useEffect(() => {
+    localStorage.setItem(localVoiceMuteStorageKey, JSON.stringify(locallyMutedVoiceUsers));
+  }, [locallyMutedVoiceUsers]);
+
   const clearVoiceAudio = useCallback(() => {
     for (const element of voiceAudioElementsRef.current) {
       element.remove();
@@ -271,46 +316,207 @@ export function App() {
     voiceAudioElementsRef.current.clear();
   }, []);
 
-  const syncVoiceParticipants = useCallback(
+  const emitVoiceSelfState = useCallback((payload: VoiceSelfStateRequest) => {
+    const currentSocket = socketRef.current;
+
+    if (!currentSocket?.connected) {
+      return Promise.resolve<VoiceStateView | null>(null);
+    }
+
+    return new Promise<VoiceStateView>((resolve, reject) => {
+      currentSocket.emit("voice:self-state", payload, (response) => {
+        if (response.ok) {
+          resolve(response.state);
+        } else {
+          reject(new Error(response.error));
+        }
+      });
+    });
+  }, []);
+
+  const emitVoiceJoin = useCallback(() => {
+    const currentSocket = socketRef.current;
+
+    if (!currentSocket?.connected) {
+      return Promise.resolve<VoiceStateView | null>(null);
+    }
+
+    return new Promise<VoiceStateView>((resolve, reject) => {
+      currentSocket.emit("voice:join", (response) => {
+        if (response.ok) {
+          resolve(response.state);
+        } else {
+          reject(new Error(response.error));
+        }
+      });
+    });
+  }, []);
+
+  const emitVoiceModeration = useCallback((payload: VoiceModerationRequest) => {
+    const currentSocket = socketRef.current;
+
+    if (!currentSocket?.connected) {
+      return Promise.resolve<VoiceStateView | null>(null);
+    }
+
+    return new Promise<VoiceStateView>((resolve, reject) => {
+      currentSocket.emit("voice:moderate", payload, (response) => {
+        if (response.ok) {
+          resolve(response.state);
+        } else {
+          reject(new Error(response.error));
+        }
+      });
+    });
+  }, []);
+
+  const requestScreenSource = useCallback(async () => {
+    const sources = await window.gcchat.screens.getSources();
+
+    if (sources.length === 0) {
+      return null;
+    }
+
+    if (sources.length === 1) {
+      return sources[0] ?? null;
+    }
+
+    return new Promise<ScreenSourcePreview | null>((resolve) => {
+      screenSourceResolverRef.current = resolve;
+      setScreenSourcePicker(sources);
+    });
+  }, []);
+
+  const resolveScreenSource = (source: ScreenSourcePreview | null) => {
+    screenSourceResolverRef.current?.(source);
+    screenSourceResolverRef.current = null;
+    setScreenSourcePicker(null);
+  };
+
+  const applyVoiceAudioPreferences = useCallback(
     (room: Room | null) => {
-      if (!room || !session) {
-        setVoiceParticipants([]);
+      if (!room) {
         return;
       }
 
-      const participants: Participant[] = [
-        room.localParticipant,
-        ...Array.from(room.remoteParticipants.values())
-      ];
+      for (const participant of room.remoteParticipants.values()) {
+        const volume = voiceDeafened
+          ? 0
+          : locallyMutedVoiceUsers.includes(participant.identity)
+            ? 0
+            : (voiceVolumes[participant.identity] ?? 100) / 100;
 
-      setVoiceParticipants(
-        participants.map((participant) => {
-          const profile =
-            session.user.id === participant.identity
-              ? session.user
-              : session.members.find((member) => member.id === participant.identity) ?? null;
+        participant.setVolume(volume);
+      }
+    },
+    [locallyMutedVoiceUsers, voiceDeafened, voiceVolumes]
+  );
 
-          return {
-            identity: participant.identity,
-            name: profile?.displayName ?? participant.name ?? participant.identity,
-            isLocal: participant.identity === room.localParticipant.identity,
-            isMuted: isParticipantAudioMuted(participant),
-            isSpeaking: participant.isSpeaking,
-            profile
-          };
-        })
-      );
+  const syncScreenShares = useCallback(
+    (room: Room | null) => {
+      if (!room || !session) {
+        setScreenShares([]);
+        setVoiceSharing(false);
+        return;
+      }
+
+      const nextShares: ScreenShareView[] = [];
+      const addParticipantShare = (participant: Participant, isLocal: boolean) => {
+        const profile =
+          session.user.id === participant.identity
+            ? session.user
+            : session.members.find((member) => member.id === participant.identity) ?? null;
+        const publications = Array.from(participant.videoTrackPublications.values()) as Array<{
+          source: Track.Source;
+          track?: LocalTrack | RemoteTrack | null;
+          isMuted?: boolean;
+        }>;
+        const screenPublication = publications.find(
+          (publication) => publication.source === Track.Source.ScreenShare
+        );
+
+        if (!screenPublication) {
+          return;
+        }
+
+        nextShares.push({
+          userId: participant.identity,
+          name: profile?.displayName ?? participant.name ?? participant.identity,
+          isLocal,
+          profile,
+          track: screenPublication.track ?? null,
+          status: screenPublication.isMuted ? "unavailable" : screenPublication.track ? "live" : "starting"
+        });
+      };
+
+      addParticipantShare(room.localParticipant, true);
+      for (const participant of room.remoteParticipants.values()) {
+        addParticipantShare(participant, false);
+      }
+
+      setScreenShares(nextShares);
+      setVoiceSharing(nextShares.some((share) => share.userId === session.user.id && share.status === "live"));
     },
     [session]
   );
 
-  const disconnectVoice = useCallback(() => {
+  const syncVoiceParticipants = useCallback(
+    (room: Room | null) => {
+      if (!session) {
+        setVoiceParticipants([]);
+        return;
+      }
+
+      setVoiceParticipants(
+        voiceServerState.participants.map((participantState) => {
+          const liveParticipant = room ? getLiveKitParticipant(room, participantState.userId) : null;
+          const profile =
+            session.user.id === participantState.userId
+              ? session.user
+              : session.members.find((member) => member.id === participantState.userId) ?? null;
+          const liveMuted = liveParticipant ? isParticipantAudioMuted(liveParticipant) : participantState.selfMuted;
+          const locallyMuted = locallyMutedVoiceUsers.includes(participantState.userId);
+
+          return {
+            userId: participantState.userId,
+            name: profile?.displayName ?? liveParticipant?.name ?? participantState.userId,
+            isLocal: participantState.userId === session.user.id,
+            isMuted:
+              participantState.serverMuted ||
+              participantState.serverDeafened ||
+              participantState.selfDeafened ||
+              liveMuted,
+            isDeafened: participantState.selfDeafened || participantState.serverDeafened,
+            isServerMuted: participantState.serverMuted,
+            isServerDeafened: participantState.serverDeafened,
+            isSpeaking: liveParticipant?.isSpeaking ?? false,
+            isScreenSharing: participantState.screenSharing,
+            reconnecting: participantState.reconnecting,
+            profile,
+            volume: voiceVolumes[participantState.userId] ?? 100,
+            locallyMuted
+          };
+        })
+      );
+    },
+    [locallyMutedVoiceUsers, session, voiceServerState.participants, voiceVolumes]
+  );
+
+  const disconnectVoice = useCallback((notifyServer = true) => {
+    if (notifyServer) {
+      socketRef.current?.emit("voice:leave");
+    }
+
+    void voiceRoomRef.current?.localParticipant.setScreenShareEnabled(false).catch(() => undefined);
     voiceRoomRef.current?.disconnect();
     voiceRoomRef.current = null;
     clearVoiceAudio();
-    setVoiceStatus("idle");
-    setVoiceParticipants([]);
+    setVoiceStatus("disconnected");
     setVoiceMuted(false);
+    setVoiceDeafened(false);
+    setVoiceSharing(false);
+    setScreenShares([]);
+    setSelectedStreamUserId(null);
   }, [clearVoiceAudio]);
 
   const handleVoiceJoin = async () => {
@@ -326,7 +532,7 @@ export function App() {
       const credentials = await api.createVoiceToken();
       room = new Room({ adaptiveStream: true, dynacast: true });
 
-      const attachAudio = (track: RemoteTrack) => {
+      const attachAudio = (track: RemoteTrack, participant: RemoteParticipant) => {
         if (track.kind !== Track.Kind.Audio) {
           return;
         }
@@ -335,6 +541,9 @@ export function App() {
         element.autoplay = true;
         element.setAttribute("playsinline", "true");
         element.style.display = "none";
+        element.volume = locallyMutedVoiceUsers.includes(participant.identity)
+          ? 0
+          : (voiceVolumes[participant.identity] ?? 100) / 100;
         document.body.appendChild(element);
         voiceAudioElementsRef.current.add(element);
       };
@@ -346,17 +555,32 @@ export function App() {
         }
       };
 
-      const sync = () => syncVoiceParticipants(room);
+      const sync = () => {
+        syncVoiceParticipants(room);
+        syncScreenShares(room);
+        applyVoiceAudioPreferences(room);
+      };
 
       room.on(RoomEvent.ParticipantConnected, sync);
       room.on(RoomEvent.ParticipantDisconnected, sync);
       room.on(RoomEvent.ActiveSpeakersChanged, sync);
       room.on(RoomEvent.TrackMuted, sync);
       room.on(RoomEvent.TrackUnmuted, sync);
+      room.on(RoomEvent.TrackPublished, sync);
+      room.on(RoomEvent.TrackUnpublished, sync);
+      room.on(RoomEvent.LocalTrackPublished, sync);
+      room.on(RoomEvent.LocalTrackUnpublished, sync);
+      room.on(RoomEvent.Reconnecting, () => setVoiceStatus("reconnecting"));
+      room.on(RoomEvent.Reconnected, () => {
+        setVoiceStatus("connected");
+        void emitVoiceJoin().then((state) => state && setVoiceServerState(state)).catch((requestError) => {
+          setError(getMessage(requestError));
+        });
+      });
       room.on(
         RoomEvent.TrackSubscribed,
         (track: RemoteTrack, _publication: RemoteTrackPublication, _participant: RemoteParticipant) => {
-          attachAudio(track);
+          attachAudio(track, _participant);
           sync();
         }
       );
@@ -370,9 +594,12 @@ export function App() {
       room.on(RoomEvent.Disconnected, () => {
         clearVoiceAudio();
         voiceRoomRef.current = null;
-        setVoiceStatus("idle");
-        setVoiceParticipants([]);
+        setVoiceStatus("disconnected");
         setVoiceMuted(false);
+        setVoiceDeafened(false);
+        setVoiceSharing(false);
+        setScreenShares([]);
+        setSelectedStreamUserId(null);
       });
 
       await room.connect(credentials.url, credentials.token, { autoSubscribe: true });
@@ -380,19 +607,32 @@ export function App() {
       voiceRoomRef.current = room;
       setVoiceStatus("connected");
       setVoiceMuted(false);
+      setVoiceDeafened(false);
+      const voiceState = await emitVoiceJoin();
+      if (voiceState) {
+        setVoiceServerState(voiceState);
+      }
       syncVoiceParticipants(room);
+      syncScreenShares(room);
+      applyVoiceAudioPreferences(room);
     } catch (requestError) {
       room?.disconnect();
       clearVoiceAudio();
-      setVoiceStatus("error");
+      setVoiceStatus("failed");
       setError(getMessage(requestError));
     }
   };
 
   const handleVoiceMuteToggle = async () => {
     const room = voiceRoomRef.current;
+    const selfState = voiceServerState.participants.find((participant) => participant.userId === session?.user.id);
 
     if (!room || voiceStatus !== "connected") {
+      return;
+    }
+
+    if (selfState?.serverMuted || selfState?.serverDeafened) {
+      setError("You are server muted and cannot unmute yourself.");
       return;
     }
 
@@ -400,10 +640,79 @@ export function App() {
       const nextMuted = !voiceMuted;
       await room.localParticipant.setMicrophoneEnabled(!nextMuted);
       setVoiceMuted(nextMuted);
+      await emitVoiceSelfState({ selfMuted: nextMuted });
       syncVoiceParticipants(room);
     } catch (requestError) {
       setError(getMessage(requestError));
     }
+  };
+
+  const handleVoiceDeafenToggle = async () => {
+    const room = voiceRoomRef.current;
+    const selfState = voiceServerState.participants.find((participant) => participant.userId === session?.user.id);
+
+    if (!room || voiceStatus !== "connected") {
+      return;
+    }
+
+    try {
+      const nextDeafened = !voiceDeafened;
+      const forcedMuted = nextDeafened || Boolean(selfState?.serverMuted || selfState?.serverDeafened);
+      await room.localParticipant.setMicrophoneEnabled(!forcedMuted);
+      setVoiceDeafened(nextDeafened);
+      setVoiceMuted(forcedMuted);
+      await emitVoiceSelfState({ selfDeafened: nextDeafened, selfMuted: forcedMuted });
+      applyVoiceAudioPreferences(room);
+      syncVoiceParticipants(room);
+    } catch (requestError) {
+      setError(getMessage(requestError));
+    }
+  };
+
+  const handleScreenShareToggle = async () => {
+    const room = voiceRoomRef.current;
+
+    if (!room || voiceStatus !== "connected" || !session) {
+      setError("Join voice before sharing your screen.");
+      return;
+    }
+
+    try {
+      if (voiceSharing) {
+        await room.localParticipant.setScreenShareEnabled(false);
+        setVoiceSharing(false);
+        setSelectedStreamUserId((current) => (current === session.user.id ? null : current));
+        await emitVoiceSelfState({ screenSharing: false });
+        syncScreenShares(room);
+        return;
+      }
+
+      const source = await requestScreenSource();
+
+      if (!source) {
+        return;
+      }
+
+      await window.gcchat.screens.selectSource(source.id);
+      setVoiceSharing(true);
+      await emitVoiceSelfState({ screenSharing: true });
+      await room.localParticipant.setScreenShareEnabled(true);
+      setSelectedStreamUserId(session.user.id);
+      syncScreenShares(room);
+    } catch (requestError) {
+      setVoiceSharing(false);
+      void emitVoiceSelfState({ screenSharing: false });
+      setError(getMessage(requestError));
+    }
+  };
+
+  const handleVoiceModeration = async (payload: VoiceModerationRequest) => {
+    onErrorFromAsync(async () => {
+      const state = await emitVoiceModeration(payload);
+      if (state) {
+        setVoiceServerState(state);
+      }
+    }, setError);
   };
 
   useEffect(() => {
@@ -412,7 +721,44 @@ export function App() {
 
   useEffect(() => {
     syncVoiceParticipants(voiceRoomRef.current);
-  }, [session?.members, session?.user, syncVoiceParticipants]);
+  }, [session?.members, session?.user, syncVoiceParticipants, voiceServerState]);
+
+  useEffect(() => {
+    applyVoiceAudioPreferences(voiceRoomRef.current);
+    syncVoiceParticipants(voiceRoomRef.current);
+  }, [applyVoiceAudioPreferences, locallyMutedVoiceUsers, syncVoiceParticipants, voiceDeafened, voiceVolumes]);
+
+  useEffect(() => {
+    if (!selectedStreamUserId) {
+      return;
+    }
+
+    const selectedShare = screenShares.find(
+      (share) => share.userId === selectedStreamUserId && share.status === "live"
+    );
+
+    if (!selectedShare) {
+      setSelectedStreamUserId(null);
+    }
+  }, [screenShares, selectedStreamUserId]);
+
+  useEffect(() => {
+    const room = voiceRoomRef.current;
+    const selfState = voiceServerState.participants.find((participant) => participant.userId === session?.user.id);
+
+    if (!room || !selfState) {
+      return;
+    }
+
+    if (selfState.serverMuted || selfState.serverDeafened) {
+      void room.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
+      setVoiceMuted(true);
+    }
+
+    if (selfState.serverDeafened) {
+      setVoiceDeafened(true);
+    }
+  }, [session?.user.id, voiceServerState.participants]);
 
   const enterBannedState = () => {
     localStorage.removeItem(tokenStorageKey);
@@ -573,6 +919,30 @@ export function App() {
     });
 
     socket.on("emojis:updated", setCustomEmojis);
+
+    socket.on("voice:state", (state) => {
+      setVoiceServerState(state);
+    });
+
+    socket.on("voice:moderated", (state) => {
+      if (state.userId !== session.user.id) {
+        return;
+      }
+
+      if (state.serverMuted || state.serverDeafened) {
+        void voiceRoomRef.current?.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
+        setVoiceMuted(true);
+      }
+
+      if (state.serverDeafened) {
+        setVoiceDeafened(true);
+      }
+    });
+
+    socket.on("voice:force-disconnect", () => {
+      disconnectVoice(false);
+      setError("You were disconnected from voice by an admin.");
+    });
 
     socket.on("connect_error", (socketError) => setError(socketError.message));
     socketRef.current = socket;
@@ -799,6 +1169,9 @@ export function App() {
   const currentChannel = activeChannel ?? session.channel;
   const canManageEmojis = hasAtLeastRole(session.user.role, "ADMIN");
   const canViewAudit = session.user.role === "SUPER_ADMIN";
+  const selectedStream = selectedStreamUserId
+    ? screenShares.find((share) => share.userId === selectedStreamUserId) ?? null
+    : null;
 
   return (
     <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
@@ -855,11 +1228,28 @@ export function App() {
           onError={setError}
           voiceStatus={voiceStatus}
           voiceMuted={voiceMuted}
+          voiceDeafened={voiceDeafened}
+          voiceSharing={voiceSharing}
           voiceParticipants={voiceParticipants}
+          screenShares={screenShares}
           onVoiceJoin={() => void handleVoiceJoin()}
           onVoiceLeave={disconnectVoice}
           onVoiceMuteToggle={() => void handleVoiceMuteToggle()}
+          onVoiceDeafenToggle={() => void handleVoiceDeafenToggle()}
+          onScreenShareToggle={() => void handleScreenShareToggle()}
+          onWatchStream={setSelectedStreamUserId}
           onVoiceProfile={setSelectedProfile}
+          onSetVoiceVolume={(userId, volume) =>
+            setVoiceVolumes((current) => ({ ...current, [userId]: volume }))
+          }
+          onToggleLocalVoiceMute={(userId) =>
+            setLocallyMutedVoiceUsers((current) =>
+              current.includes(userId)
+                ? current.filter((existing) => existing !== userId)
+                : [...current, userId]
+            )
+          }
+          onVoiceModeration={(payload) => void handleVoiceModeration(payload)}
         />
       ) : null}
 
@@ -881,39 +1271,56 @@ export function App() {
             </div>
           ) : null}
 
-          <MessageList
-            messages={messages}
-            members={session.members}
-            calendarEvents={calendarEvents}
-            calendarEventsStatus={calendarEventsStatus}
-            customEmojis={customEmojis}
-            currentUser={session.user}
-            onProfile={setSelectedProfile}
-            onReply={setReplyToMessage}
-            onEdit={setEditingMessage}
-            onDelete={(message) => void handleMessageDelete(message)}
-            onReact={(message, emoji) => void handleReaction(message, emoji)}
-            onEventUpdated={handleCalendarEventUpdated}
-            onOpenCalendarEvent={handleOpenCalendarEvent}
-            onError={setError}
-          />
-          <Composer
-            channel={currentChannel}
-            currentUser={session.user}
-            members={session.members}
-            calendarEvents={calendarEvents}
-            customEmojis={customEmojis}
-            replyTo={replyToMessage}
-            editingMessage={editingMessage}
-            socket={socket}
-            onCancelReply={() => setReplyToMessage(null)}
-            onCancelEdit={() => setEditingMessage(null)}
-            onError={setError}
-            onOptimisticMessage={handleOptimisticMessage}
-            onConfirmedMessage={handleConfirmedMessage}
-            onFailedMessage={handleFailedMessage}
-            onEdited={handleMessageEdited}
-          />
+          {selectedStream ? (
+            <ScreenShareStage
+              stream={selectedStream}
+              allStreams={screenShares}
+              voiceStatus={voiceStatus}
+              muted={voiceMuted}
+              deafened={voiceDeafened}
+              onSelectStream={setSelectedStreamUserId}
+              onExit={() => setSelectedStreamUserId(null)}
+              onToggleMute={() => void handleVoiceMuteToggle()}
+              onToggleDeafen={() => void handleVoiceDeafenToggle()}
+              onDisconnect={disconnectVoice}
+            />
+          ) : (
+            <>
+              <MessageList
+                messages={messages}
+                members={session.members}
+                calendarEvents={calendarEvents}
+                calendarEventsStatus={calendarEventsStatus}
+                customEmojis={customEmojis}
+                currentUser={session.user}
+                onProfile={setSelectedProfile}
+                onReply={setReplyToMessage}
+                onEdit={setEditingMessage}
+                onDelete={(message) => void handleMessageDelete(message)}
+                onReact={(message, emoji) => void handleReaction(message, emoji)}
+                onEventUpdated={handleCalendarEventUpdated}
+                onOpenCalendarEvent={handleOpenCalendarEvent}
+                onError={setError}
+              />
+              <Composer
+                channel={currentChannel}
+                currentUser={session.user}
+                members={session.members}
+                calendarEvents={calendarEvents}
+                customEmojis={customEmojis}
+                replyTo={replyToMessage}
+                editingMessage={editingMessage}
+                socket={socket}
+                onCancelReply={() => setReplyToMessage(null)}
+                onCancelEdit={() => setEditingMessage(null)}
+                onError={setError}
+                onOptimisticMessage={handleOptimisticMessage}
+                onConfirmedMessage={handleConfirmedMessage}
+                onFailedMessage={handleFailedMessage}
+                onEdited={handleMessageEdited}
+              />
+            </>
+          )}
         </main>
       ) : activeFeature === "calendar" ? (
         <CalendarView
@@ -987,6 +1394,13 @@ export function App() {
             setDeleteChannel(null);
           }}
           onError={setError}
+        />
+      ) : null}
+      {screenSourcePicker ? (
+        <ScreenSourcePicker
+          sources={screenSourcePicker}
+          onSelect={resolveScreenSource}
+          onCancel={() => resolveScreenSource(null)}
         />
       ) : null}
     </div>
@@ -1188,11 +1602,20 @@ function ChannelSidebar({
   onError,
   voiceStatus,
   voiceMuted,
+  voiceDeafened,
+  voiceSharing,
   voiceParticipants,
+  screenShares,
   onVoiceJoin,
   onVoiceLeave,
   onVoiceMuteToggle,
-  onVoiceProfile
+  onVoiceDeafenToggle,
+  onScreenShareToggle,
+  onWatchStream,
+  onVoiceProfile,
+  onSetVoiceVolume,
+  onToggleLocalVoiceMute,
+  onVoiceModeration
 }: {
   session: Session;
   activeChannelId: string;
@@ -1205,11 +1628,20 @@ function ChannelSidebar({
   onError: (error: string | null) => void;
   voiceStatus: VoiceStatus;
   voiceMuted: boolean;
+  voiceDeafened: boolean;
+  voiceSharing: boolean;
   voiceParticipants: VoiceParticipantView[];
+  screenShares: ScreenShareView[];
   onVoiceJoin: () => void;
   onVoiceLeave: () => void;
   onVoiceMuteToggle: () => void;
+  onVoiceDeafenToggle: () => void;
+  onScreenShareToggle: () => void;
+  onWatchStream: (userId: string) => void;
   onVoiceProfile: (profile: UserProfile) => void;
+  onSetVoiceVolume: (userId: string, volume: number) => void;
+  onToggleLocalVoiceMute: (userId: string) => void;
+  onVoiceModeration: (payload: VoiceModerationRequest) => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -1301,16 +1733,39 @@ function ChannelSidebar({
         </div>
 
         <VoiceChannelSection
+          currentUser={session.user}
           status={voiceStatus}
           muted={voiceMuted}
+          deafened={voiceDeafened}
+          sharing={voiceSharing}
+          participants={voiceParticipants}
+          screenShares={screenShares}
+          onJoin={onVoiceJoin}
+          onLeave={onVoiceLeave}
+          onToggleMute={onVoiceMuteToggle}
+          onToggleDeafen={onVoiceDeafenToggle}
+          onToggleScreenShare={onScreenShareToggle}
+          onWatchStream={onWatchStream}
+          onProfile={onVoiceProfile}
+          onSetVolume={onSetVoiceVolume}
+          onToggleLocalMute={onToggleLocalVoiceMute}
+          onModerate={onVoiceModeration}
+        />
+      </div>
+
+      <div className="channel-bottom">
+        <VoiceStatusBar
+          status={voiceStatus}
+          muted={voiceMuted}
+          deafened={voiceDeafened}
+          sharing={voiceSharing}
           participants={voiceParticipants}
           onJoin={onVoiceJoin}
           onLeave={onVoiceLeave}
           onToggleMute={onVoiceMuteToggle}
-          onProfile={onVoiceProfile}
+          onToggleDeafen={onVoiceDeafenToggle}
+          onToggleScreenShare={onScreenShareToggle}
         />
-      </div>
-
       <div className="user-panel">
         <button className="user-identity" onClick={onProfile}>
           <Avatar profile={session.user} size="sm" status="online" />
@@ -1326,29 +1781,68 @@ function ChannelSidebar({
           <LogOut size={18} />
         </button>
       </div>
+      </div>
     </aside>
   );
 }
 
 function VoiceChannelSection({
+  currentUser,
   status,
   muted,
+  deafened,
+  sharing,
   participants,
+  screenShares,
   onJoin,
   onLeave,
   onToggleMute,
-  onProfile
+  onToggleDeafen,
+  onToggleScreenShare,
+  onWatchStream,
+  onProfile,
+  onSetVolume,
+  onToggleLocalMute,
+  onModerate
 }: {
+  currentUser: UserProfile;
   status: VoiceStatus;
   muted: boolean;
+  deafened: boolean;
+  sharing: boolean;
   participants: VoiceParticipantView[];
+  screenShares: ScreenShareView[];
   onJoin: () => void;
   onLeave: () => void;
   onToggleMute: () => void;
+  onToggleDeafen: () => void;
+  onToggleScreenShare: () => void;
+  onWatchStream: (userId: string) => void;
   onProfile: (profile: UserProfile) => void;
+  onSetVolume: (userId: string, volume: number) => void;
+  onToggleLocalMute: (userId: string) => void;
+  onModerate: (payload: VoiceModerationRequest) => void;
 }) {
   const connected = status === "connected";
   const connecting = status === "connecting";
+  const active = participants.length > 0;
+  const canModerate = hasAtLeastRole(currentUser.role, "ADMIN");
+  const [contextMenu, setContextMenu] = useState<{
+    participant: VoiceParticipantView;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+
+    return () => window.removeEventListener("click", close);
+  }, [contextMenu]);
 
   return (
     <section className="voice-channel-section">
@@ -1361,24 +1855,43 @@ function VoiceChannelSection({
       >
         {connecting ? <Loader2 className="spin" size={18} /> : <Volume2 size={18} />}
         <span>General Voice</span>
+        {active && !connected ? <em className="voice-active-pill">Live</em> : null}
       </button>
 
-      {connected || connecting ? (
+      {connected || connecting || active ? (
         <div className="voice-connection-card">
           <div className="voice-status-row">
             <PhoneCall size={15} />
-            <span>{connecting ? "Connecting..." : "Voice Connected"}</span>
+            <span>{voiceStatusLabel(status, active)}</span>
+            {!connected && active ? (
+              <button className="mini-join-button" type="button" onClick={onJoin}>
+                Join
+              </button>
+            ) : null}
           </div>
 
           {participants.length > 0 ? (
             <div className="voice-participant-list">
               {participants.map((participant) => (
+                <div
+                  className={`voice-participant-row ${participant.isScreenSharing ? "has-stream" : ""}`}
+                  key={participant.userId}
+                >
                 <button
-                  className={`voice-participant ${participant.isSpeaking ? "speaking" : ""}`}
-                  key={participant.identity}
+                  className={`voice-participant ${participant.isSpeaking ? "speaking" : ""} ${
+                    participant.reconnecting ? "reconnecting" : ""
+                  }`}
                   type="button"
                   disabled={!participant.profile}
                   onClick={() => participant.profile && onProfile(participant.profile)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({
+                      participant,
+                      x: event.clientX,
+                      y: event.clientY
+                    });
+                  }}
                   title={participant.isLocal ? "You" : participant.name}
                 >
                   {participant.profile ? (
@@ -1387,21 +1900,118 @@ function VoiceChannelSection({
                     <span className="voice-fallback-avatar">{participant.name.slice(0, 2).toUpperCase()}</span>
                   )}
                   <span>{participant.isLocal ? `${participant.name} (you)` : participant.name}</span>
-                  {participant.isMuted ? <MicOff size={13} /> : null}
+                  {participant.isScreenSharing ? (
+                    <span
+                      className="live-badge"
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onWatchStream(participant.userId);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onWatchStream(participant.userId);
+                        }
+                      }}
+                      title="Sharing screen"
+                    >
+                      LIVE
+                    </span>
+                  ) : null}
+                  {participant.isServerMuted ? (
+                    <MicOff className="server-muted-icon" size={13} aria-label="Server muted" />
+                  ) : participant.isMuted ? (
+                    <MicOff size={13} aria-label="Muted" />
+                  ) : null}
+                  {participant.isDeafened ? <VolumeX size={13} aria-label="Deafened" /> : null}
                 </button>
+                {participant.isScreenSharing ? (
+                  <StreamHoverPreview
+                    stream={screenShares.find((share) => share.userId === participant.userId) ?? null}
+                    onWatch={() => onWatchStream(participant.userId)}
+                  />
+                ) : null}
+                </div>
               ))}
             </div>
           ) : null}
 
-          <div className="voice-controls">
+          {connected ? <VoiceControlRow
+            muted={muted}
+            deafened={deafened}
+            sharing={sharing}
+            onToggleMute={onToggleMute}
+            onToggleDeafen={onToggleDeafen}
+            onToggleScreenShare={onToggleScreenShare}
+            onLeave={onLeave}
+          /> : null}
+          {contextMenu ? (
+            <VoiceUserContextMenu
+              state={contextMenu}
+              canModerate={canModerate}
+              onClose={() => setContextMenu(null)}
+              onProfile={(profile) => {
+                onProfile(profile);
+                setContextMenu(null);
+              }}
+              onSetVolume={onSetVolume}
+              onToggleLocalMute={onToggleLocalMute}
+              onModerate={onModerate}
+            />
+          ) : null}
+        </div>
+      ) : status === "failed" ? (
+        <p className="voice-error">Failed to connect.</p>
+      ) : null}
+    </section>
+  );
+}
+
+function VoiceControlRow({
+  muted,
+  deafened,
+  sharing,
+  onToggleMute,
+  onToggleDeafen,
+  onToggleScreenShare,
+  onLeave
+}: {
+  muted: boolean;
+  deafened: boolean;
+  sharing: boolean;
+  onToggleMute: () => void;
+  onToggleDeafen: () => void;
+  onToggleScreenShare: () => void;
+  onLeave: () => void;
+}) {
+  return (
+    <div className="voice-controls">
             <button
               className={`voice-control-button ${muted ? "danger" : ""}`}
               type="button"
               onClick={onToggleMute}
-              disabled={!connected}
               title={muted ? "Unmute microphone" : "Mute microphone"}
             >
               {muted ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
+            <button
+              className={`voice-control-button ${deafened ? "danger" : ""}`}
+              type="button"
+              onClick={onToggleDeafen}
+              title={deafened ? "Undeafen" : "Deafen"}
+            >
+              {deafened ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            </button>
+            <button
+              className={`voice-control-button ${sharing ? "active" : ""}`}
+              type="button"
+              onClick={onToggleScreenShare}
+              title={sharing ? "Stop sharing screen" : "Share screen"}
+            >
+              {sharing ? <MonitorX size={16} /> : <MonitorUp size={16} />}
             </button>
             <button
               className="voice-control-button danger"
@@ -1412,11 +2022,377 @@ function VoiceChannelSection({
               <PhoneOff size={16} />
             </button>
           </div>
+  );
+}
+
+function VoiceStatusBar({
+  status,
+  muted,
+  deafened,
+  sharing,
+  participants,
+  onJoin,
+  onLeave,
+  onToggleMute,
+  onToggleDeafen,
+  onToggleScreenShare
+}: {
+  status: VoiceStatus;
+  muted: boolean;
+  deafened: boolean;
+  sharing: boolean;
+  participants: VoiceParticipantView[];
+  onJoin: () => void;
+  onLeave: () => void;
+  onToggleMute: () => void;
+  onToggleDeafen: () => void;
+  onToggleScreenShare: () => void;
+}) {
+  const connected = status === "connected" || status === "reconnecting";
+  const active = participants.length > 0;
+
+  if (!connected && !active && status !== "failed") {
+    return null;
+  }
+
+  return (
+    <section className={`voice-status-bar ${connected ? "connected" : ""}`}>
+      <div className="voice-status-main">
+        <PhoneCall size={16} />
+        <div>
+          <strong>{voiceStatusLabel(status, active)}</strong>
+          <small>General Voice / {active ? `${participants.length} connected` : "ready"}</small>
         </div>
-      ) : status === "error" ? (
-        <p className="voice-error">Voice is not available.</p>
-      ) : null}
+      </div>
+      <div className="voice-status-tools">
+        {connected ? (
+          <>
+            <button
+              type="button"
+              className={`voice-status-button ${muted ? "danger" : ""}`}
+              onClick={onToggleMute}
+              title={muted ? "Muted" : "Mute"}
+            >
+              {muted ? <MicOff size={15} /> : <Mic size={15} />}
+            </button>
+            <button
+              type="button"
+              className={`voice-status-button ${deafened ? "danger" : ""}`}
+              onClick={onToggleDeafen}
+              title={deafened ? "Deafened" : "Deafen"}
+            >
+              {deafened ? <VolumeX size={15} /> : <Volume2 size={15} />}
+            </button>
+            <button
+              type="button"
+              className={`voice-status-button ${sharing ? "active" : ""}`}
+              onClick={onToggleScreenShare}
+              title={sharing ? "Stop sharing" : "Share screen"}
+            >
+              {sharing ? <MonitorX size={15} /> : <MonitorUp size={15} />}
+            </button>
+            <button type="button" className="voice-status-button danger" onClick={onLeave} title="Disconnect">
+              <PhoneOff size={15} />
+            </button>
+          </>
+        ) : (
+          <button type="button" className="voice-status-join" onClick={onJoin}>
+            Join Voice
+          </button>
+        )}
+      </div>
     </section>
+  );
+}
+
+function VoiceUserContextMenu({
+  state,
+  canModerate,
+  onClose,
+  onProfile,
+  onSetVolume,
+  onToggleLocalMute,
+  onModerate
+}: {
+  state: { participant: VoiceParticipantView; x: number; y: number };
+  canModerate: boolean;
+  onClose: () => void;
+  onProfile: (profile: UserProfile) => void;
+  onSetVolume: (userId: string, volume: number) => void;
+  onToggleLocalMute: (userId: string) => void;
+  onModerate: (payload: VoiceModerationRequest) => void;
+}) {
+  const participant = state.participant;
+  const canModerateParticipant = canModerate && !participant.isLocal;
+
+  return (
+    <div
+      className="voice-context-menu"
+      style={{ left: state.x, top: state.y }}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {participant.profile ? (
+        <button type="button" onClick={() => onProfile(participant.profile!)}>
+          <User size={16} />
+          View Profile
+        </button>
+      ) : null}
+      <label className="voice-volume-control">
+        <span>User Volume</span>
+        <input
+          type="range"
+          min="0"
+          max="200"
+          value={participant.locallyMuted ? 0 : participant.volume}
+          onChange={(event) => onSetVolume(participant.userId, Number(event.target.value))}
+        />
+        <small>{participant.locallyMuted ? "Muted locally" : `${participant.volume}%`}</small>
+      </label>
+      <button
+        type="button"
+        onClick={() => {
+          onToggleLocalMute(participant.userId);
+          onClose();
+        }}
+      >
+        {participant.locallyMuted ? <Volume2 size={16} /> : <VolumeX size={16} />}
+        {participant.locallyMuted ? "Unmute Locally" : "Mute Locally"}
+      </button>
+      {canModerateParticipant ? (
+        <>
+          <hr />
+          <button
+            type="button"
+            onClick={() => {
+              onModerate({
+                targetUserId: participant.userId,
+                serverMuted: !participant.isServerMuted
+              });
+              onClose();
+            }}
+          >
+            <MicOff size={16} />
+            {participant.isServerMuted ? "Remove Server Mute" : "Server Mute"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onModerate({
+                targetUserId: participant.userId,
+                serverDeafened: !participant.isServerDeafened
+              });
+              onClose();
+            }}
+          >
+            <VolumeX size={16} />
+            {participant.isServerDeafened ? "Remove Server Deafen" : "Server Deafen"}
+          </button>
+          <button
+            type="button"
+            className="danger"
+            onClick={() => {
+              onModerate({ targetUserId: participant.userId, disconnect: true });
+              onClose();
+            }}
+          >
+            <PhoneOff size={16} />
+            Disconnect from Voice
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function StreamHoverPreview({
+  stream,
+  onWatch
+}: {
+  stream: ScreenShareView | null;
+  onWatch: () => void;
+}) {
+  return (
+    <div className="stream-hover-preview">
+      <div className="stream-hover-header">
+        <span>Streaming Now</span>
+        <em>LIVE</em>
+      </div>
+      <div className="stream-preview-frame">
+        {stream?.track && stream.status === "live" ? (
+          <TrackVideo track={stream.track} muted />
+        ) : (
+          <span>{stream?.status === "unavailable" ? "Stream unavailable" : "Starting stream..."}</span>
+        )}
+      </div>
+      <button type="button" onClick={onWatch}>
+        <MonitorUp size={16} />
+        Watch Stream
+      </button>
+    </div>
+  );
+}
+
+function ScreenShareStage({
+  stream,
+  allStreams,
+  voiceStatus,
+  muted,
+  deafened,
+  onSelectStream,
+  onExit,
+  onToggleMute,
+  onToggleDeafen,
+  onDisconnect
+}: {
+  stream: ScreenShareView;
+  allStreams: ScreenShareView[];
+  voiceStatus: VoiceStatus;
+  muted: boolean;
+  deafened: boolean;
+  onSelectStream: (userId: string) => void;
+  onExit: () => void;
+  onToggleMute: () => void;
+  onToggleDeafen: () => void;
+  onDisconnect: () => void;
+}) {
+  useEffect(() => {
+    const exitOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onExit();
+      }
+    };
+
+    window.addEventListener("keydown", exitOnEscape);
+    return () => window.removeEventListener("keydown", exitOnEscape);
+  }, [onExit]);
+
+  const liveStreams = allStreams.filter((candidate) => candidate.status === "live");
+
+  return (
+    <section className="screen-share-stage">
+      <header className="stream-stage-header">
+        <div>
+          <strong>{stream.name}</strong>
+          <span>Watching {stream.isLocal ? "your stream" : `${stream.name}'s stream`}</span>
+        </div>
+        <div className="stream-stage-actions">
+          <button type="button" onClick={onToggleMute} title={muted ? "Muted" : "Mute self"}>
+            {muted ? <MicOff size={16} /> : <Mic size={16} />}
+          </button>
+          <button type="button" onClick={onToggleDeafen} title={deafened ? "Deafened" : "Deafen"}>
+            {deafened ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+          <button type="button" onClick={onDisconnect} title="Disconnect">
+            <PhoneOff size={16} />
+          </button>
+          <button type="button" onClick={onExit} title="Back to chat">
+            <X size={17} />
+          </button>
+        </div>
+      </header>
+      <div className="stream-stage-body">
+        {stream.track && stream.status === "live" ? (
+          <TrackVideo track={stream.track} />
+        ) : (
+          <div className="stream-ended-state">
+            <MonitorX size={34} />
+            <h2>{stream.status === "unavailable" ? "Stream unavailable" : "Starting stream..."}</h2>
+            <p>
+              {stream.status === "unavailable"
+                ? "The stream is having trouble loading."
+                : "GCChat is waiting for LiveKit to publish the screen track."}
+            </p>
+            <button className="secondary-button" type="button" onClick={onExit}>
+              Back to chat
+            </button>
+          </div>
+        )}
+      </div>
+      <footer className="stream-stage-footer">
+        <span className={voiceStatus === "reconnecting" ? "reconnecting" : ""}>
+          {voiceStatus === "reconnecting" ? "Reconnecting..." : "Voice connected"}
+        </span>
+        {liveStreams.length > 1 ? (
+          <div className="stream-switcher">
+            {liveStreams.map((candidate) => (
+              <button
+                className={candidate.userId === stream.userId ? "active" : ""}
+                key={candidate.userId}
+                type="button"
+                onClick={() => onSelectStream(candidate.userId)}
+              >
+                {candidate.profile ? <Avatar profile={candidate.profile} size="xs" /> : null}
+                <span>{candidate.isLocal ? "You" : candidate.name}</span>
+                <em>LIVE</em>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </footer>
+    </section>
+  );
+}
+
+function TrackVideo({
+  track,
+  muted = false
+}: {
+  track: LocalTrack | RemoteTrack;
+  muted?: boolean;
+}) {
+  const ref = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+
+    if (!element) {
+      return;
+    }
+
+    track.attach(element);
+    element.muted = muted;
+    element.play().catch(() => undefined);
+
+    return () => {
+      track.detach(element);
+    };
+  }, [muted, track]);
+
+  return <video ref={ref} autoPlay playsInline muted={muted} />;
+}
+
+function ScreenSourcePicker({
+  sources,
+  onSelect,
+  onCancel
+}: {
+  sources: ScreenSourcePreview[];
+  onSelect: (source: ScreenSourcePreview) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="modal-backdrop screen-source-backdrop">
+      <section className="screen-source-modal">
+        <header>
+          <div>
+            <h2>Share Your Screen</h2>
+            <p>Choose a screen or window to share in General Voice.</p>
+          </div>
+          <button type="button" onClick={onCancel} aria-label="Cancel">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="screen-source-grid">
+          {sources.map((source) => (
+            <button type="button" key={source.id} onClick={() => onSelect(source)}>
+              <img src={source.thumbnail} alt="" />
+              <span>{source.name}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -3984,6 +4960,34 @@ function isParticipantAudioMuted(participant: Participant) {
   return publications.every((publication) => publication.isMuted);
 }
 
+function getLiveKitParticipant(room: Room, userId: string): Participant | null {
+  if (room.localParticipant.identity === userId) {
+    return room.localParticipant;
+  }
+
+  return room.remoteParticipants.get(userId) ?? null;
+}
+
+function voiceStatusLabel(status: VoiceStatus, active: boolean) {
+  if (status === "connecting") {
+    return "Connecting";
+  }
+
+  if (status === "connected") {
+    return "Voice Connected";
+  }
+
+  if (status === "reconnecting") {
+    return "Reconnecting";
+  }
+
+  if (status === "failed") {
+    return "Failed to connect";
+  }
+
+  return active ? "Voice Active" : "Disconnected";
+}
+
 function shouldCompactMessage(previous: MessageView | null, message: MessageView) {
   if (!previous || message.replyTo || previous.author.id !== message.author.id) {
     return false;
@@ -4092,6 +5096,14 @@ function loadAppearancePreferences(): AppearancePreferences {
     theme: "dark",
     ...readJson<Partial<AppearancePreferences>>(appearanceStorageKey)
   };
+}
+
+function loadVoiceVolumes(): Record<string, number> {
+  return readJson<Record<string, number>>(voiceVolumeStorageKey) ?? {};
+}
+
+function loadLocalVoiceMutes(): string[] {
+  return readJson<string[]>(localVoiceMuteStorageKey) ?? [];
 }
 
 function readJson<T>(key: string): T | null {

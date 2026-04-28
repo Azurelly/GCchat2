@@ -35,6 +35,8 @@ Railway `@gcchat/server` must include:
 
 The MVP voice UX is a single shared voice channel in the chat tab named `General Voice`. If future work adds more voice channels, keep them inside the chat feature's channel list rather than treating them as separate hub features.
 
+Voice presence and moderation are tracked by the GCChat Socket.IO server, while audio/video media stays on LiveKit. This is intentional: users should be able to see who is in the call, who is muted/deafened, and who is screen sharing even when they are not currently joined to LiveKit. LiveKit screen sharing is exposed through the Electron renderer with a main-process screen/window picker; keep the LiveKit API secret server-only.
+
 Where settings belong:
 
 - Railway `@gcchat/server` variables: `DATABASE_URL`, `DIRECT_URL`, `JWT_SECRET`, `CLIENT_ORIGIN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AVATARS_BUCKET`, `SUPABASE_ATTACHMENTS_BUCKET`, `LIVEKIT_WS_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_ROOM_NAME`.

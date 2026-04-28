@@ -15,6 +15,12 @@ interface UpdateStatus {
   canRestart: boolean;
 }
 
+interface ScreenSourcePreview {
+  id: string;
+  name: string;
+  thumbnail: string;
+}
+
 interface Window {
   gcchat: {
     platform: string;
@@ -28,6 +34,10 @@ interface Window {
       minimize: () => Promise<void>;
       toggleMaximize: () => Promise<void>;
       close: () => Promise<void>;
+    };
+    screens: {
+      getSources: () => Promise<ScreenSourcePreview[]>;
+      selectSource: (sourceId: string) => Promise<void>;
     };
   };
 }

@@ -1,6 +1,12 @@
 import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
-import type { ClientToServerEvents, ServerToClientEvents } from "@gcchat/shared";
+import type {
+  ClientToServerEvents,
+  ServerToClientEvents,
+  UserRole,
+  VoiceParticipantState,
+  VoiceStateView
+} from "@gcchat/shared";
 import { verifyAuthToken, type AuthUser } from "./auth";
 import { HttpError } from "./errors";
 import type { ServerEnv } from "./env";
@@ -12,6 +18,26 @@ interface SocketData {
   user: AuthUser;
   serverId?: string;
 }
+
+interface VoicePresence {
+  userId: string;
+  selfMuted: boolean;
+  selfDeafened: boolean;
+  serverMuted: boolean;
+  serverDeafened: boolean;
+  screenSharing: boolean;
+  reconnecting: boolean;
+  joinedAt: string;
+  updatedAt: string;
+}
+
+interface VoiceModerationState {
+  serverMuted: boolean;
+  serverDeafened: boolean;
+}
+
+const voiceChannelName = "General Voice";
+const voiceReconnectGraceMs = 12000;
 
 export function attachRealtime(
   httpServer: HttpServer,
@@ -26,6 +52,9 @@ export function attachRealtime(
     }
   );
   const onlineUsers = new Map<string, number>();
+  const voiceParticipants = new Map<string, VoicePresence>();
+  const voiceModeration = new Map<string, VoiceModerationState>();
+  const voiceReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   io.use((socket, next) => {
     const token = socket.handshake.auth.token;
@@ -58,6 +87,7 @@ export function attachRealtime(
         socket.join(userRoom(socket.data.user.id));
         socket.join(channelRoom(bootstrap.channel.id));
         socket.join(serverRoom(bootstrap.server.id));
+        socket.emit("voice:state", buildVoiceState());
         void emitMembersWithPresence(bootstrap.server.id);
       })
       .catch(() => socket.disconnect(true));
@@ -70,6 +100,8 @@ export function attachRealtime(
       if (serverId) {
         void emitMembersWithPresence(serverId);
       }
+
+      markVoiceParticipantReconnecting(socket.data.user.id);
     });
 
     socket.on("channel:join", async (payload, ack) => {
@@ -109,6 +141,137 @@ export function attachRealtime(
           io.emit("emojis:updated", await repo.listCustomEmojis());
         }
         ack?.({ ok: true, message });
+      } catch (error) {
+        ack?.({ ok: false, error: getErrorMessage(error) });
+      }
+    });
+
+    socket.on("voice:join", async (ack) => {
+      try {
+        await assertSocketActive(socket.data.user.id);
+        const now = new Date().toISOString();
+        const moderation = voiceModeration.get(socket.data.user.id) ?? {
+          serverMuted: false,
+          serverDeafened: false
+        };
+        const existing = voiceParticipants.get(socket.data.user.id);
+
+        clearVoiceReconnectTimer(socket.data.user.id);
+        voiceParticipants.set(socket.data.user.id, {
+          userId: socket.data.user.id,
+          selfMuted: existing?.selfMuted ?? (moderation.serverMuted || moderation.serverDeafened),
+          selfDeafened: existing?.selfDeafened ?? moderation.serverDeafened,
+          serverMuted: moderation.serverMuted,
+          serverDeafened: moderation.serverDeafened,
+          screenSharing: existing?.screenSharing ?? false,
+          reconnecting: false,
+          joinedAt: existing?.joinedAt ?? now,
+          updatedAt: now
+        });
+
+        const state = buildVoiceState();
+        io.emit("voice:state", state);
+        ack?.({ ok: true, state });
+      } catch (error) {
+        ack?.({ ok: false, error: getErrorMessage(error) });
+      }
+    });
+
+    socket.on("voice:leave", async (ack) => {
+      try {
+        await assertSocketActive(socket.data.user.id);
+        clearVoiceReconnectTimer(socket.data.user.id);
+        voiceParticipants.delete(socket.data.user.id);
+        io.emit("voice:state", buildVoiceState());
+        ack?.({ ok: true });
+      } catch (error) {
+        ack?.({ ok: false, error: getErrorMessage(error) });
+      }
+    });
+
+    socket.on("voice:self-state", async (payload, ack) => {
+      try {
+        await assertSocketActive(socket.data.user.id);
+        const existing = voiceParticipants.get(socket.data.user.id);
+
+        if (!existing) {
+          throw new HttpError(409, "You are not connected to voice");
+        }
+
+        const selfDeafened = payload.selfDeafened ?? existing.selfDeafened;
+        const moderatedMuted = existing.serverMuted || existing.serverDeafened;
+        const next: VoicePresence = {
+          ...existing,
+          selfMuted: moderatedMuted || selfDeafened || (payload.selfMuted ?? existing.selfMuted),
+          selfDeafened,
+          screenSharing: payload.screenSharing ?? existing.screenSharing,
+          reconnecting: false,
+          updatedAt: new Date().toISOString()
+        };
+
+        voiceParticipants.set(socket.data.user.id, next);
+        const state = buildVoiceState();
+        io.emit("voice:state", state);
+        ack?.({ ok: true, state });
+      } catch (error) {
+        ack?.({ ok: false, error: getErrorMessage(error) });
+      }
+    });
+
+    socket.on("voice:moderate", async (payload, ack) => {
+      try {
+        await assertSocketActive(socket.data.user.id);
+        const actor = await repo.getProfile(socket.data.user.id);
+
+        if (!actor || !hasAtLeastRole(actor.role, "ADMIN")) {
+          throw new HttpError(403, "Admin permissions are required");
+        }
+
+        if (payload.targetUserId === socket.data.user.id) {
+          throw new HttpError(400, "You cannot moderate your own voice state");
+        }
+
+        const now = new Date().toISOString();
+        const currentModeration = voiceModeration.get(payload.targetUserId) ?? {
+          serverMuted: false,
+          serverDeafened: false
+        };
+        const nextModeration = {
+          serverMuted: payload.serverMuted ?? currentModeration.serverMuted,
+          serverDeafened: payload.serverDeafened ?? currentModeration.serverDeafened
+        };
+
+        voiceModeration.set(payload.targetUserId, nextModeration);
+
+        if (payload.disconnect) {
+          clearVoiceReconnectTimer(payload.targetUserId);
+          voiceParticipants.delete(payload.targetUserId);
+          io.to(userRoom(payload.targetUserId)).emit("voice:force-disconnect");
+        } else {
+          const currentPresence = voiceParticipants.get(payload.targetUserId);
+
+          if (currentPresence) {
+            const nextPresence: VoicePresence = {
+              ...currentPresence,
+              serverMuted: nextModeration.serverMuted,
+              serverDeafened: nextModeration.serverDeafened,
+              selfMuted:
+                nextModeration.serverMuted ||
+                nextModeration.serverDeafened ||
+                currentPresence.selfDeafened ||
+                currentPresence.selfMuted,
+              selfDeafened: nextModeration.serverDeafened || currentPresence.selfDeafened,
+              updatedAt: now
+            };
+
+            voiceParticipants.set(payload.targetUserId, nextPresence);
+            io.to(userRoom(payload.targetUserId)).emit("voice:moderated", toVoiceParticipantState(nextPresence));
+          }
+        }
+
+        const state = buildVoiceState();
+        io.emit("voice:state", state);
+        ack?.({ ok: true, state });
       } catch (error) {
         ack?.({ ok: false, error: getErrorMessage(error) });
       }
@@ -161,6 +324,54 @@ export function attachRealtime(
   };
 
   return io;
+
+  function buildVoiceState(): VoiceStateView {
+    return {
+      channelName: voiceChannelName,
+      participants: Array.from(voiceParticipants.values())
+        .map(toVoiceParticipantState)
+        .sort((a, b) => Date.parse(a.joinedAt) - Date.parse(b.joinedAt))
+    };
+  }
+
+  function markVoiceParticipantReconnecting(userId: string) {
+    const existing = voiceParticipants.get(userId);
+
+    if (!existing || voiceReconnectTimers.has(userId)) {
+      return;
+    }
+
+    voiceParticipants.set(userId, {
+      ...existing,
+      reconnecting: true,
+      updatedAt: new Date().toISOString()
+    });
+    io.emit("voice:state", buildVoiceState());
+
+    voiceReconnectTimers.set(
+      userId,
+      setTimeout(() => {
+        voiceReconnectTimers.delete(userId);
+        const current = voiceParticipants.get(userId);
+
+        if (current?.reconnecting) {
+          voiceParticipants.delete(userId);
+          io.emit("voice:state", buildVoiceState());
+        }
+      }, voiceReconnectGraceMs)
+    );
+  }
+
+  function clearVoiceReconnectTimer(userId: string) {
+    const timer = voiceReconnectTimers.get(userId);
+
+    if (!timer) {
+      return;
+    }
+
+    clearTimeout(timer);
+    voiceReconnectTimers.delete(userId);
+  }
 
   async function emitMembersWithPresence(serverId: string) {
     const members = await repo.listServerMembers(serverId);
@@ -220,4 +431,28 @@ function getErrorMessage(error: unknown) {
 
 function hasCustomEmojiToken(content: string) {
   return /:[a-z0-9_]{2,32}:/i.test(content);
+}
+
+function toVoiceParticipantState(presence: VoicePresence): VoiceParticipantState {
+  return {
+    userId: presence.userId,
+    selfMuted: presence.selfMuted,
+    selfDeafened: presence.selfDeafened,
+    serverMuted: presence.serverMuted,
+    serverDeafened: presence.serverDeafened,
+    screenSharing: presence.screenSharing,
+    reconnecting: presence.reconnecting,
+    joinedAt: presence.joinedAt,
+    updatedAt: presence.updatedAt
+  };
+}
+
+function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {
+  const rank: Record<UserRole, number> = {
+    USER: 0,
+    ADMIN: 1,
+    SUPER_ADMIN: 2
+  };
+
+  return rank[role] >= rank[minimum];
 }

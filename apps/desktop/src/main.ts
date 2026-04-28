@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, autoUpdater, BrowserWindow, ipcMain, Menu, session, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, desktopCapturer, ipcMain, Menu, session, shell } from "electron";
 import started from "electron-squirrel-startup";
 import releaseConfig from "../../../release.config.json";
 
@@ -30,6 +30,7 @@ interface UpdateStatus {
 let mainWindow: BrowserWindow | null = null;
 let updateStatus: UpdateStatus = { phase: "idle", canRestart: false };
 let updatesConfigured = false;
+let selectedDisplayMediaSourceId: string | null = null;
 
 const createWindow = () => {
   Menu.setApplicationMenu(null);
@@ -69,6 +70,29 @@ app.on("ready", createWindow);
 app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permission === "media");
+  });
+  session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    desktopCapturer
+      .getSources({ types: ["screen", "window"], thumbnailSize: { width: 1, height: 1 } })
+      .then((sources) => {
+        const selected =
+          sources.find((source) => source.id === selectedDisplayMediaSourceId) ??
+          sources.find((source) => source.id.startsWith("screen:")) ??
+          sources[0];
+
+        selectedDisplayMediaSourceId = null;
+
+        if (!selected) {
+          callback({});
+          return;
+        }
+
+        callback({
+          video: selected,
+          audio: request.audioRequested && process.platform === "win32" ? "loopback" : undefined
+        });
+      })
+      .catch(() => callback({}));
   });
   setupAutoUpdates();
 });
@@ -118,6 +142,24 @@ ipcMain.handle("window:toggle-maximize", () => {
 
 ipcMain.handle("window:close", () => {
   BrowserWindow.getFocusedWindow()?.close();
+});
+
+ipcMain.handle("screens:get-sources", async () => {
+  const sources = await desktopCapturer.getSources({
+    types: ["screen", "window"],
+    thumbnailSize: { width: 280, height: 158 },
+    fetchWindowIcons: true
+  });
+
+  return sources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    thumbnail: source.thumbnail.toDataURL()
+  }));
+});
+
+ipcMain.handle("screens:select-source", (_event, sourceId: unknown) => {
+  selectedDisplayMediaSourceId = typeof sourceId === "string" ? sourceId : null;
 });
 
 function setupAutoUpdates() {

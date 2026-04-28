@@ -72,6 +72,50 @@ describe("realtime messaging", () => {
     io.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
+
+  it("keeps voice channel presence visible after another user leaves the call locally", async () => {
+    const repo = new InMemoryChatRepository();
+    const realtime: RealtimePublisher = {
+      emitMessage: () => undefined,
+      emitMessageUpdated: () => undefined,
+      emitMessageDeleted: () => undefined,
+      emitProfileUpdated: () => undefined,
+      emitMembersUpdated: () => undefined,
+      emitChannelsUpdated: () => undefined,
+      emitSessionBanned: () => undefined,
+      emitCalendarEvent: () => undefined,
+      emitCalendarEventDeleted: () => undefined,
+      emitAuditLog: () => undefined,
+      emitEmojisUpdated: () => undefined
+    };
+    const app = createApp({ env, repo, storage: new MemoryAssetStorage(), realtime });
+    const server = http.createServer(app);
+    const io = attachRealtime(server, env, repo, realtime);
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const alice = await register(url, "Alice");
+    const bob = await register(url, "Bob");
+    const aliceSocket = connect(url, alice.token);
+    const bobSocket = connect(url, bob.token);
+    clients.push(aliceSocket, bobSocket);
+
+    await Promise.all([waitForConnect(aliceSocket), waitForConnect(bobSocket)]);
+
+    const bobSawAlice = waitForVoiceState(bobSocket, 1);
+    aliceSocket.emit("voice:join");
+    await expect(bobSawAlice).resolves.toMatchObject({
+      participants: [expect.objectContaining({ userId: expect.any(String) })]
+    });
+
+    const bobSawNobody = waitForVoiceState(bobSocket, 0);
+    aliceSocket.emit("voice:leave");
+    await expect(bobSawNobody).resolves.toMatchObject({ participants: [] });
+
+    io.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
 });
 
 async function register(url: string, username: string) {
@@ -100,5 +144,15 @@ function waitForConnect(socket: Socket) {
   return new Promise<void>((resolve, reject) => {
     socket.on("connect", resolve);
     socket.on("connect_error", reject);
+  });
+}
+
+function waitForVoiceState(socket: Socket, participantCount: number) {
+  return new Promise<{ participants: unknown[] }>((resolve) => {
+    socket.on("voice:state", (state: { participants: unknown[] }) => {
+      if (state.participants.length === participantCount) {
+        resolve(state);
+      }
+    });
   });
 }

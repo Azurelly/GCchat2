@@ -39,4 +39,7 @@ Voice MVP behavior:
 - Users can join one shared `General Voice` channel from the Chat sidebar.
 - LiveKit Cloud hosts the realtime audio room.
 - The GCChat server mints short-lived voice tokens after normal app authentication.
-- Users can mute/unmute their microphone and disconnect from the voice channel.
+- The app keeps a server-side voice presence roster so users can see an active call and who is in it even when they are not connected.
+- Users can mute/unmute, deafen/undeafen, disconnect, share their screen, watch another user's stream, and adjust per-user local volume.
+- Screen sharing uses LiveKit screen-share tracks and an Electron screen/window picker.
+- Admins and Super Admins can server mute, server deafen, and disconnect users from voice through the voice participant context menu.
