@@ -123,6 +123,10 @@ export function attachRealtime(
     io.to(channelRoom(message.channelId)).emit("message:updated", message);
   };
 
+  realtime.emitMessageDeleted = (payload) => {
+    io.to(channelRoom(payload.channelId)).emit("message:deleted", payload);
+  };
+
   realtime.emitProfileUpdated = (profile) => {
     io.emit("profile:updated", profile);
   };
@@ -142,6 +146,14 @@ export function attachRealtime(
 
   realtime.emitCalendarEvent = (event) => {
     io.emit("calendar:event:upsert", event);
+  };
+
+  realtime.emitCalendarEventDeleted = (payload) => {
+    io.emit("calendar:event:deleted", payload);
+  };
+
+  realtime.emitAuditLog = (entry) => {
+    io.emit("audit:new", entry);
   };
 
   realtime.emitEmojisUpdated = (emojis) => {

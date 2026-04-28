@@ -15,8 +15,10 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Clock,
   Download,
+  Edit3,
   FileUp,
   Hash,
   ImageUp,
@@ -32,6 +34,7 @@ import {
   Pencil,
   RefreshCw,
   Reply,
+  RotateCcw,
   Search,
   Send,
   Settings,
@@ -50,6 +53,7 @@ import {
 import { io, type Socket } from "socket.io-client";
 import type {
   AuthResponse,
+  AuditLogView,
   BootstrapPayload,
   CalendarEventView,
   ChannelSummary,
@@ -103,7 +107,7 @@ const defaultEmojis = [
 ];
 
 type ChatSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
-type ActiveFeature = "chat" | "calendar" | "emojis";
+type ActiveFeature = "chat" | "calendar" | "emojis" | "audit";
 type ThemeName = "dark" | "light" | "midnight" | "forest" | "berry";
 type NotificationSound = "ping" | "chime" | "alert" | "none";
 type DefaultEmoji = (typeof defaultEmojis)[number];
@@ -135,8 +139,10 @@ export function App() {
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
   const [calendarEventsStatus, setCalendarEventsStatus] = useState<CalendarEventsStatus>("idle");
   const [customEmojis, setCustomEmojis] = useState<CustomEmojiView[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogView[]>([]);
   const [calendarFocusEventId, setCalendarFocusEventId] = useState<string | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<MessageView | null>(null);
+  const [editingMessage, setEditingMessage] = useState<MessageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [banned, setBanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,7 +175,22 @@ export function App() {
     if (session && activeFeature === "emojis" && !hasAtLeastRole(session.user.role, "ADMIN")) {
       setActiveFeature("chat");
     }
+
+    if (session && activeFeature === "audit" && session.user.role !== "SUPER_ADMIN") {
+      setActiveFeature("chat");
+    }
   }, [activeFeature, session]);
+
+  useEffect(() => {
+    if (!session || activeFeature !== "audit" || session.user.role !== "SUPER_ADMIN") {
+      return;
+    }
+
+    api
+      .getAuditLogs()
+      .then(setAuditLogs)
+      .catch((requestError) => setError(getMessage(requestError)));
+  }, [activeFeature, session?.token, session?.user.role]);
 
   useEffect(() => {
     const token = localStorage.getItem(tokenStorageKey);
@@ -223,6 +244,7 @@ export function App() {
     setCalendarEvents([]);
     setCalendarEventsStatus("idle");
     setCustomEmojis([]);
+    setAuditLogs([]);
     setSelectedProfile(null);
     setSettingsOpen(false);
   };
@@ -236,6 +258,7 @@ export function App() {
       setCalendarEvents([]);
       setCalendarEventsStatus("idle");
       setCustomEmojis([]);
+      setAuditLogs([]);
       return;
     }
 
@@ -310,7 +333,7 @@ export function App() {
 
       if (
         session.user.id !== message.author.id &&
-        messageMentionsUser(message.content, session.user) &&
+        messageShouldNotifyUser(message, session.user) &&
         shouldNotifyMention(notificationPrefs)
       ) {
         showMentionNotification(message, notificationPrefs, setToasts);
@@ -319,6 +342,10 @@ export function App() {
 
     socket.on("message:updated", (message) => {
       setMessagesByChannel((current) => replaceMessageInChannel(current, message.id, normalizeMessage(message)));
+    });
+
+    socket.on("message:deleted", (payload) => {
+      setMessagesByChannel((current) => removeMessageFromChannel(current, payload.channelId, payload.id));
     });
 
     socket.on("profile:updated", (profile) => {
@@ -354,6 +381,14 @@ export function App() {
     socket.on("session:banned", enterBannedState);
 
     socket.on("calendar:event:upsert", () => loadCalendarEvents());
+
+    socket.on("calendar:event:deleted", (payload) => {
+      setCalendarEvents((current) => current.filter((event) => event.id !== payload.id));
+    });
+
+    socket.on("audit:new", (entry) => {
+      setAuditLogs((current) => [entry, ...current.filter((log) => log.id !== entry.id)].slice(0, 200));
+    });
 
     socket.on("emojis:updated", setCustomEmojis);
 
@@ -512,6 +547,37 @@ export function App() {
     }
   };
 
+  const handleMessageEdited = (message: MessageView) => {
+    setMessagesByChannel((current) => replaceMessageInChannel(current, message.id, message));
+    setEditingMessage(null);
+  };
+
+  const handleMessageDelete = async (message: MessageView) => {
+    onErrorFromAsync(async () => {
+      const deleted = await api.deleteMessage(message.id);
+      setMessagesByChannel((current) => removeMessageFromChannel(current, deleted.channelId, deleted.id));
+    }, setError);
+  };
+
+  const handleCalendarEventDeleted = (eventId: string) => {
+    setCalendarEvents((current) => current.filter((event) => event.id !== eventId));
+  };
+
+  const handleAuditRestore = async (entry: AuditLogView) => {
+    onErrorFromAsync(async () => {
+      const restored = await api.restoreAuditLogEntry(entry.id);
+      setAuditLogs((current) => current.map((log) => (log.id === restored.auditLog.id ? restored.auditLog : log)));
+
+      if (restored.message) {
+        setMessagesByChannel((current) => upsertMessageInChannel(current, restored.message!));
+      }
+
+      if (restored.event) {
+        setCalendarEvents((current) => upsertCalendarEvent(current, restored.event!));
+      }
+    }, setError);
+  };
+
   const handleOpenCalendarEvent = (eventId: string) => {
     setCalendarFocusEventId(eventId);
     setActiveFeature("calendar");
@@ -549,6 +615,7 @@ export function App() {
 
   const currentChannel = activeChannel ?? session.channel;
   const canManageEmojis = hasAtLeastRole(session.user.role, "ADMIN");
+  const canViewAudit = session.user.role === "SUPER_ADMIN";
 
   return (
     <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
@@ -578,6 +645,16 @@ export function App() {
             title="Emoji studio"
           >
             <SmilePlus size={24} />
+          </button>
+        ) : null}
+        {canViewAudit ? (
+          <button
+            className={`server-pill ${activeFeature === "audit" ? "active" : ""}`}
+            onClick={() => setActiveFeature("audit")}
+            aria-label="Audit log"
+            title="Audit log"
+          >
+            <ClipboardList size={24} />
           </button>
         ) : null}
       </aside>
@@ -623,6 +700,8 @@ export function App() {
             currentUser={session.user}
             onProfile={setSelectedProfile}
             onReply={setReplyToMessage}
+            onEdit={setEditingMessage}
+            onDelete={(message) => void handleMessageDelete(message)}
             onReact={(message, emoji) => void handleReaction(message, emoji)}
             onEventUpdated={handleCalendarEventUpdated}
             onOpenCalendarEvent={handleOpenCalendarEvent}
@@ -635,23 +714,36 @@ export function App() {
             calendarEvents={calendarEvents}
             customEmojis={customEmojis}
             replyTo={replyToMessage}
+            editingMessage={editingMessage}
             socket={socket}
             onCancelReply={() => setReplyToMessage(null)}
+            onCancelEdit={() => setEditingMessage(null)}
             onError={setError}
             onOptimisticMessage={handleOptimisticMessage}
             onConfirmedMessage={handleConfirmedMessage}
             onFailedMessage={handleFailedMessage}
+            onEdited={handleMessageEdited}
           />
         </main>
       ) : activeFeature === "calendar" ? (
         <CalendarView
           events={calendarEvents}
           eventsStatus={calendarEventsStatus}
+          currentUser={session.user}
           focusEventId={calendarFocusEventId}
           onFocusHandled={() => setCalendarFocusEventId(null)}
           onCreated={handleCalendarEventCreated}
           onUpdated={handleCalendarEventUpdated}
+          onDeleted={handleCalendarEventDeleted}
           onProfile={setSelectedProfile}
+          onError={setError}
+          error={error}
+          onDismissError={() => setError(null)}
+        />
+      ) : activeFeature === "audit" ? (
+        <AuditLogPanel
+          entries={auditLogs}
+          onRestore={(entry) => void handleAuditRestore(entry)}
           onError={setError}
           error={error}
           onDismissError={() => setError(null)}
@@ -1033,6 +1125,8 @@ function MessageList({
   currentUser,
   onProfile,
   onReply,
+  onEdit,
+  onDelete,
   onReact,
   onEventUpdated,
   onOpenCalendarEvent,
@@ -1046,12 +1140,15 @@ function MessageList({
   currentUser: UserProfile;
   onProfile: (profile: UserProfile) => void;
   onReply: (message: MessageView) => void;
+  onEdit: (message: MessageView) => void;
+  onDelete: (message: MessageView) => void;
   onReact: (message: MessageView, emoji: string) => void;
   onEventUpdated: (event: CalendarEventView) => void;
   onOpenCalendarEvent: (eventId: string) => void;
   onError: (error: string | null) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messageRefs = useRef(new Map<string, HTMLElement>());
   const [contextMenu, setContextMenu] = useState<{
     message: MessageView;
     x: number;
@@ -1062,6 +1159,18 @@ function MessageList({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages.length]);
+
+  const scrollToMessage = (messageId: string) => {
+    const element = messageRefs.current.get(messageId);
+
+    if (!element) {
+      return;
+    }
+
+    element.scrollIntoView({ block: "center", behavior: "smooth" });
+    element.classList.add("message-flash");
+    window.setTimeout(() => element.classList.remove("message-flash"), 1400);
+  };
 
   useEffect(() => {
     if (!contextMenu) {
@@ -1097,41 +1206,61 @@ function MessageList({
 
   return (
     <section className="message-list">
-      {messages.map((message) => (
-        <article
-          className={`message-row ${message.id.startsWith("temp-") ? "pending" : ""} ${
-            messageMentionsUser(message.content, currentUser) ? "mentioned" : ""
-          }`}
-          key={message.id}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            if (message.id.startsWith("temp-")) {
-              return;
-            }
+      {messages.map((message, index) => {
+        const previous = messages[index - 1] ?? null;
+        const compact = shouldCompactMessage(previous, message);
 
-            setContextMenu({
-              message,
-              x: event.clientX,
-              y: event.clientY,
-              mode: "actions"
-            });
-          }}
-        >
-          <button className="avatar-button" onClick={() => onProfile(message.author)}>
-            <Avatar profile={message.author} size="md" />
-          </button>
-          <div className="message-body">
-            <div className="message-meta">
-              <button onClick={() => onProfile(message.author)}>{message.author.displayName}</button>
-              <time>{formatTime(message.createdAt)}</time>
-            </div>
-            {message.replyTo ? (
-              <button className="message-reply-preview" onClick={() => onProfile(message.replyTo!.author)}>
-                <Reply size={14} />
-                <span>{message.replyTo.author.displayName}</span>
-                <small>{summarizeReply(message.replyTo)}</small>
+        return (
+          <article
+            className={`message-row ${compact ? "compact" : ""} ${message.id.startsWith("temp-") ? "pending" : ""} ${
+              messageShouldNotifyUser(message, currentUser) ? "mentioned" : ""
+            }`}
+            key={message.id}
+            ref={(node) => {
+              if (node) {
+                messageRefs.current.set(message.id, node);
+              } else {
+                messageRefs.current.delete(message.id);
+              }
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              if (message.id.startsWith("temp-")) {
+                return;
+              }
+
+              setContextMenu({
+                message,
+                x: event.clientX,
+                y: event.clientY,
+                mode: "actions"
+              });
+            }}
+          >
+            {compact ? (
+              <time className="compact-time">{formatTime(message.createdAt)}</time>
+            ) : (
+              <button className="avatar-button" onClick={() => onProfile(message.author)}>
+                <Avatar profile={message.author} size="md" />
               </button>
-            ) : null}
+            )}
+            <div className="message-body">
+              {!compact ? (
+                <div className="message-meta">
+                  <button onClick={() => onProfile(message.author)}>{message.author.displayName}</button>
+                  <time>{formatTime(message.createdAt)}</time>
+                  {message.editedAt ? <span className="edited-mark">(edited)</span> : null}
+                </div>
+              ) : message.editedAt ? (
+                <span className="edited-mark compact-edited">(edited)</span>
+              ) : null}
+              {message.replyTo ? (
+                <button className="message-reply-preview" onClick={() => scrollToMessage(message.replyTo!.id)}>
+                  <Reply size={14} />
+                  <span>{message.replyTo.author.displayName}</span>
+                  <small>{summarizeReply(message.replyTo)}</small>
+                </button>
+              ) : null}
             {renderMessageText(stripEventTokens(message.content), members, customEmojis, onProfile)}
             {extractEventIds(message.content).map((eventId) => {
               const event = calendarEvents.find((candidate) => candidate.id === eventId);
@@ -1189,15 +1318,25 @@ function MessageList({
             ) : null}
           </div>
         </article>
-      ))}
+        );
+      })}
       <div ref={bottomRef} />
       {contextMenu ? (
         <MessageContextMenu
           state={contextMenu}
           customEmojis={customEmojis}
+          currentUser={currentUser}
           onClose={() => setContextMenu(null)}
           onReply={(message) => {
             onReply(message);
+            setContextMenu(null);
+          }}
+          onEdit={(message) => {
+            onEdit(message);
+            setContextMenu(null);
+          }}
+          onDelete={(message) => {
+            onDelete(message);
             setContextMenu(null);
           }}
           onReact={(message, emoji) => {
@@ -1216,19 +1355,27 @@ function MessageList({
 function MessageContextMenu({
   state,
   customEmojis,
+  currentUser,
   onClose,
   onReply,
+  onEdit,
+  onDelete,
   onReact,
   onReactionMode
 }: {
   state: { message: MessageView; x: number; y: number; mode: "actions" | "reactions" };
   customEmojis: CustomEmojiView[];
+  currentUser: UserProfile;
   onClose: () => void;
   onReply: (message: MessageView) => void;
+  onEdit: (message: MessageView) => void;
+  onDelete: (message: MessageView) => void;
   onReact: (message: MessageView, emoji: string) => void;
   onReactionMode: () => void;
 }) {
   const quickEmojis = defaultEmojis.slice(0, 12);
+  const canEdit = state.message.author.id === currentUser.id;
+  const canDelete = canEdit || currentUser.role === "SUPER_ADMIN";
 
   return (
     <div
@@ -1243,6 +1390,18 @@ function MessageContextMenu({
             <Reply size={18} />
             Reply
           </button>
+          {canEdit ? (
+            <button type="button" onClick={() => onEdit(state.message)}>
+              <Edit3 size={18} />
+              Edit Message
+            </button>
+          ) : null}
+          {canDelete ? (
+            <button type="button" className="danger" onClick={() => onDelete(state.message)}>
+              <Trash2 size={18} />
+              Delete Message
+            </button>
+          ) : null}
           <button type="button" onClick={onReactionMode}>
             <SmilePlus size={18} />
             Add Reaction
@@ -1377,12 +1536,15 @@ function Composer({
   calendarEvents,
   customEmojis,
   replyTo,
+  editingMessage,
   socket,
   onCancelReply,
+  onCancelEdit,
   onError,
   onOptimisticMessage,
   onConfirmedMessage,
-  onFailedMessage
+  onFailedMessage,
+  onEdited
 }: {
   channel: ChannelSummary;
   currentUser: UserProfile;
@@ -1390,12 +1552,15 @@ function Composer({
   calendarEvents: CalendarEventView[];
   customEmojis: CustomEmojiView[];
   replyTo: MessageView | null;
+  editingMessage: MessageView | null;
   socket: ChatSocket | null;
   onCancelReply: () => void;
+  onCancelEdit: () => void;
   onError: (error: string | null) => void;
   onOptimisticMessage: (message: MessageView) => void;
   onConfirmedMessage: (temporaryId: string, message: MessageView) => void;
   onFailedMessage: (temporaryId: string, channelId: string) => void;
+  onEdited: (message: MessageView) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -1423,7 +1588,7 @@ function Composer({
             .slice(0, 8),
     [members, mentionQuery]
   );
-  const canSend = draft.trim().length > 0 || file || attachedEvent;
+  const canSend = draft.trim().length > 0 || (!editingMessage && (file || attachedEvent));
   const filteredDefaultEmojis = useMemo(
     () =>
       defaultEmojis.filter(
@@ -1441,6 +1606,24 @@ function Composer({
     [customEmojis, emojiSearch]
   );
 
+  useEffect(() => {
+    if (!editingMessage) {
+      return;
+    }
+
+    setDraft(stripEventTokens(editingMessage.content));
+    setFile(null);
+    setAttachedEvent(null);
+    setAttachmentMenuOpen(false);
+    setEventPickerOpen(false);
+    setEmojiPickerOpen(false);
+    onCancelReply();
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }, [editingMessage?.id]);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
 
@@ -1449,6 +1632,17 @@ function Composer({
     }
 
     onError(null);
+
+    if (editingMessage) {
+      try {
+        const updated = await api.updateMessage(editingMessage.id, { content: draft.trim() });
+        onEdited(updated);
+        setDraft("");
+      } catch (requestError) {
+        onError(getMessage(requestError));
+      }
+      return;
+    }
 
     const temporaryId = `temp-${crypto.randomUUID()}`;
     const selectedFile = file;
@@ -1473,6 +1667,7 @@ function Composer({
       content,
       createdAt: new Date().toISOString(),
       editedAt: null,
+      deletedAt: null,
       author: currentUser,
       attachments: optimisticAttachments,
       replyTo: selectedReply ? createReplyPreview(selectedReply) : null,
@@ -1631,7 +1826,23 @@ function Composer({
           onCustomSelect={applyCustomEmoji}
         />
       ) : null}
-      {replyTo ? (
+      {editingMessage ? (
+        <div className="composer-reply-preview edit-preview">
+          <Edit3 size={15} />
+          <span>Editing message</span>
+          <small>Press Enter to save</small>
+          <button
+            type="button"
+            onClick={() => {
+              onCancelEdit();
+              setDraft("");
+            }}
+            aria-label="Cancel edit"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      ) : replyTo ? (
         <div className="composer-reply-preview">
           <Reply size={15} />
           <span>
@@ -1647,7 +1858,11 @@ function Composer({
         <button
           type="button"
           className="composer-tool attach-button"
+          disabled={Boolean(editingMessage)}
           onClick={() => {
+            if (editingMessage) {
+              return;
+            }
             setAttachmentMenuOpen((current) => !current);
             setEmojiPickerOpen(false);
           }}
@@ -1673,7 +1888,7 @@ function Composer({
           <input
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={`Message #${channel.name}`}
+            placeholder={editingMessage ? "Edit message" : `Message #${channel.name}`}
           />
         </div>
         <button
@@ -2008,10 +2223,12 @@ function EmojiEditModal({
 function CalendarView({
   events,
   eventsStatus,
+  currentUser,
   focusEventId,
   onFocusHandled,
   onCreated,
   onUpdated,
+  onDeleted,
   onProfile,
   onError,
   error,
@@ -2019,10 +2236,12 @@ function CalendarView({
 }: {
   events: CalendarEventView[];
   eventsStatus: CalendarEventsStatus;
+  currentUser: UserProfile;
   focusEventId: string | null;
   onFocusHandled: () => void;
   onCreated: (event: CalendarEventView) => void;
   onUpdated: (event: CalendarEventView) => void;
+  onDeleted: (eventId: string) => void;
   onProfile: (profile: UserProfile) => void;
   onError: (error: string | null) => void;
   error: string | null;
@@ -2112,6 +2331,27 @@ function CalendarView({
         optedIn: !event.viewerOptedIn
       });
       onUpdated(updated);
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusyEventId(null);
+    }
+  };
+
+  const deleteEvent = async (event: CalendarEventView) => {
+    const confirmed = window.confirm(`Delete "${event.title}" from the calendar?`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    setBusyEventId(event.id);
+    onError(null);
+
+    try {
+      const deleted = await api.deleteCalendarEvent(event.id);
+      onDeleted(deleted.id);
+      setSelectedEventId(null);
     } catch (requestError) {
       onError(getMessage(requestError));
     } finally {
@@ -2259,8 +2499,10 @@ function CalendarView({
                 <CalendarEventCard
                   event={selectedEvent}
                   busy={busyEventId === selectedEvent.id}
+                  canDelete={canDeleteCalendarEvent(selectedEvent, currentUser)}
                   onProfile={onProfile}
                   onToggleOptIn={() => toggleOptIn(selectedEvent)}
+                  onDelete={() => deleteEvent(selectedEvent)}
                 />
               </>
             ) : selectedDayEvents.length > 1 ? (
@@ -2295,13 +2537,17 @@ function CalendarView({
 function CalendarEventCard({
   event,
   busy,
+  canDelete,
   onProfile,
-  onToggleOptIn
+  onToggleOptIn,
+  onDelete
 }: {
   event: CalendarEventView;
   busy: boolean;
+  canDelete: boolean;
   onProfile: (profile: UserProfile) => void;
   onToggleOptIn: () => void;
+  onDelete: () => void;
 }) {
   return (
     <article className="calendar-event-card">
@@ -2328,6 +2574,12 @@ function CalendarEventCard({
           {busy ? <Loader2 className="spin" size={15} /> : event.viewerOptedIn ? <Check size={15} /> : <Plus size={15} />}
           {event.viewerOptedIn ? "Going" : "Join"}
         </button>
+        {canDelete ? (
+          <button className="event-delete-button" onClick={onDelete} disabled={busy}>
+            <Trash2 size={15} />
+            Delete
+          </button>
+        ) : null}
       </div>
       {event.optIns.length > 0 ? (
         <div className="event-attendees">
@@ -2395,6 +2647,86 @@ function AttendeePreview({
       ))}
       {overflow > 0 ? <span>+{overflow}</span> : null}
     </div>
+  );
+}
+
+function AuditLogPanel({
+  entries,
+  onRestore,
+  error,
+  onDismissError
+}: {
+  entries: AuditLogView[];
+  onRestore: (entry: AuditLogView) => void;
+  onError: (error: string | null) => void;
+  error: string | null;
+  onDismissError: () => void;
+}) {
+  return (
+    <main className="audit-panel">
+      <header className="chat-header">
+        <div className="chat-title">
+          <ClipboardList size={22} />
+          <span>Audit Log</span>
+        </div>
+      </header>
+
+      {error ? (
+        <div className="error-banner">
+          <span>{error}</span>
+          <button onClick={onDismissError} aria-label="Dismiss">
+            <X size={16} />
+          </button>
+        </div>
+      ) : null}
+
+      <section className="audit-content">
+        {entries.length === 0 ? (
+          <div className="empty-calendar">
+            <ClipboardList size={30} />
+            <h3>No audit entries yet</h3>
+          </div>
+        ) : (
+          entries.map((entry) => {
+            const detail = describeAuditEntry(entry);
+
+            return (
+              <article className="audit-card" key={entry.id}>
+                <header>
+                  <div>
+                    <span className="audit-action">{detail.title}</span>
+                    <time>{formatDateTime(entry.createdAt)}</time>
+                  </div>
+                  {entry.restorable ? (
+                    <button className="secondary-button compact" onClick={() => onRestore(entry)}>
+                      <RotateCcw size={15} />
+                      Restore
+                    </button>
+                  ) : null}
+                </header>
+                <p>{detail.summary}</p>
+                {detail.before || detail.after ? (
+                  <div className="audit-diff">
+                    {detail.before ? (
+                      <div>
+                        <strong>Before</strong>
+                        <pre>{detail.before}</pre>
+                      </div>
+                    ) : null}
+                    {detail.after ? (
+                      <div>
+                        <strong>After</strong>
+                        <pre>{detail.after}</pre>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })
+        )}
+      </section>
+    </main>
   );
 }
 
@@ -3018,6 +3350,7 @@ function replaceMessageInChannel(
 function normalizeMessage(message: MessageView): MessageView {
   return {
     ...message,
+    deletedAt: message.deletedAt ?? null,
     replyTo: message.replyTo ?? null,
     reactions: message.reactions ?? []
   };
@@ -3212,6 +3545,10 @@ function renderMessageText(
 }
 
 function summarizeReply(reply: NonNullable<MessageView["replyTo"]>) {
+  if (reply.deletedAt) {
+    return "Message deleted";
+  }
+
   const text = stripEventTokens(reply.content).trim();
 
   if (text) {
@@ -3230,6 +3567,8 @@ function createReplyPreview(message: MessageView): NonNullable<MessageView["repl
     id: message.id,
     content: message.content,
     createdAt: message.createdAt,
+    editedAt: message.editedAt,
+    deletedAt: message.deletedAt,
     author: message.author,
     attachments: message.attachments
   };
@@ -3325,6 +3664,102 @@ function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {
   };
 
   return rank[role] >= rank[minimum];
+}
+
+function canDeleteCalendarEvent(event: CalendarEventView, user: UserProfile) {
+  return event.creator.id === user.id || hasAtLeastRole(user.role, "ADMIN");
+}
+
+function shouldCompactMessage(previous: MessageView | null, message: MessageView) {
+  if (!previous || message.replyTo || previous.author.id !== message.author.id) {
+    return false;
+  }
+
+  const gap = Date.parse(message.createdAt) - Date.parse(previous.createdAt);
+  return gap >= 0 && gap < 7 * 60 * 1000;
+}
+
+function onErrorFromAsync(action: () => Promise<void>, onError: (error: string | null) => void) {
+  action().catch((error) => onError(getMessage(error)));
+}
+
+function messageShouldNotifyUser(message: MessageView, user: UserProfile) {
+  return messageMentionsUser(message.content, user) || message.replyTo?.author.id === user.id;
+}
+
+function describeAuditEntry(entry: AuditLogView) {
+  const actor = entry.actor?.displayName ?? "Someone";
+  const target = entry.targetUser?.displayName ?? "a user";
+  const metadata = entry.metadata as Record<string, unknown>;
+
+  if (entry.action === "MESSAGE_DELETE") {
+    const message = readAuditObject(metadata.message);
+    const attachments = readAuditArray(message?.attachments)
+      .map((attachment) => readAuditString(readAuditObject(attachment)?.fileName))
+      .filter(Boolean)
+      .join(", ");
+    const content = readAuditString(message?.content);
+
+    return {
+      title: "Message Deleted",
+      summary: `${actor} deleted ${target}'s message${attachments ? ` with file(s): ${attachments}` : ""}.`,
+      before: content || attachments || "Attachment message",
+      after: "Deleted"
+    };
+  }
+
+  if (entry.action === "MESSAGE_EDIT") {
+    const before = readAuditObject(metadata.before);
+    const after = readAuditObject(metadata.after);
+
+    return {
+      title: "Message Edited",
+      summary: `${actor} edited a message.`,
+      before: readAuditString(before?.content),
+      after: readAuditString(after?.content)
+    };
+  }
+
+  if (entry.action === "USER_BAN" || entry.action === "USER_UNBAN") {
+    return {
+      title: entry.action === "USER_BAN" ? "User Banned" : "User Unbanned",
+      summary: `${actor} ${entry.action === "USER_BAN" ? "banned" : "unbanned"} ${target}.`
+    };
+  }
+
+  if (entry.action === "USER_ROLE_UPDATE") {
+    return {
+      title: "Role Changed",
+      summary: `${actor} changed ${target}'s role from ${readAuditString(metadata.beforeRole)} to ${readAuditString(metadata.afterRole)}.`
+    };
+  }
+
+  if (entry.action === "CALENDAR_EVENT_DELETE") {
+    const event = readAuditObject(metadata.event);
+
+    return {
+      title: "Event Deleted",
+      summary: `${actor} deleted "${readAuditString(event?.title) || "an event"}".`,
+      before: `${readAuditString(event?.title)}\n${readAuditString(event?.description)}`
+    };
+  }
+
+  return {
+    title: entry.action === "MESSAGE_RESTORE" ? "Message Restored" : "Event Restored",
+    summary: `${actor} restored an item from the audit log.`
+  };
+}
+
+function readAuditObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function readAuditArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function readAuditString(value: unknown) {
+  return typeof value === "string" ? value : "";
 }
 
 function loadNotificationPreferences(): NotificationPreferences {
@@ -3459,6 +3894,16 @@ function formatDate(value: string) {
     month: "long",
     day: "numeric",
     year: "numeric"
+  }).format(new Date(value));
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
   }).format(new Date(value));
 }
 

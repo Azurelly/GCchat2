@@ -4,6 +4,7 @@ import multer from "multer";
 import type {
   ChannelSummary,
   CustomEmojiView,
+  AuditLogView,
   CalendarEventView,
   MessageView,
   ServerMemberView,
@@ -33,6 +34,7 @@ import {
   registerSchema,
   setCalendarEventOptInSchema,
   toggleMessageReactionSchema,
+  updateMessageSchema,
   updateAccountSchema,
   updateCustomEmojiSchema,
   updateUserBanSchema,
@@ -43,11 +45,14 @@ import {
 export interface RealtimePublisher {
   emitMessage(message: MessageView): void;
   emitMessageUpdated(message: MessageView): void;
+  emitMessageDeleted(payload: { id: string; channelId: string }): void;
   emitProfileUpdated(profile: UserProfile): void;
   emitMembersUpdated(serverId: string, members: ServerMemberView[]): void;
   emitChannelsUpdated(serverId: string, channels: ChannelSummary[]): void;
   emitSessionBanned(userId: string): void;
   emitCalendarEvent(event: CalendarEventView): void;
+  emitCalendarEventDeleted(payload: { id: string }): void;
+  emitAuditLog(entry: AuditLogView): void;
   emitEmojisUpdated(emojis: CustomEmojiView[]): void;
 }
 
@@ -327,6 +332,34 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
     })
   );
 
+  app.patch(
+    "/messages/:id",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const messageId = requiredParam(req, "id");
+      const parsed = updateMessageSchema.parse(req.body);
+      const message = await repo.updateMessage(messageId, {
+        actorId: user.id,
+        content: parsed.content
+      });
+
+      realtime?.emitMessageUpdated(message);
+      res.json(message);
+    })
+  );
+
+  app.delete(
+    "/messages/:id",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const messageId = requiredParam(req, "id");
+      const deleted = await repo.deleteMessage(messageId, { actorId: user.id });
+
+      realtime?.emitMessageDeleted(deleted);
+      res.json(deleted);
+    })
+  );
+
   app.post(
     "/messages/:id/reactions",
     asyncRoute(async (req, res) => {
@@ -378,6 +411,46 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
 
       realtime?.emitCalendarEvent(event);
       res.json(event);
+    })
+  );
+
+  app.delete(
+    "/calendar/events/:id",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const eventId = requiredParam(req, "id");
+      const deleted = await repo.deleteCalendarEvent(eventId, { actorId: user.id });
+
+      realtime?.emitCalendarEventDeleted(deleted);
+      res.json(deleted);
+    })
+  );
+
+  app.get(
+    "/audit",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      res.json(await repo.listAuditLogs(user.id));
+    })
+  );
+
+  app.post(
+    "/audit/:id/restore",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const logId = requiredParam(req, "id");
+      const restored = await repo.restoreAuditLogEntry(logId, { actorId: user.id });
+
+      if (restored.message) {
+        realtime?.emitMessage(restored.message);
+      }
+
+      if (restored.event) {
+        realtime?.emitCalendarEvent(restored.event);
+      }
+
+      realtime?.emitAuditLog(restored.auditLog);
+      res.json(restored);
     })
   );
 

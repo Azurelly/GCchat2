@@ -140,7 +140,7 @@ function setupAutoUpdates() {
   }
 
   autoUpdater.setFeedURL({
-    url: `https://update.electronjs.org/${updateRepo}/${process.platform}-${process.arch}/${app.getVersion()}`
+    url: getUpdateFeedUrl()
   });
 
   autoUpdater.on("checking-for-update", () => {
@@ -178,6 +178,7 @@ function checkForUpdates() {
   }
 
   try {
+    setUpdateStatus({ phase: "checking", canRestart: false });
     autoUpdater.checkForUpdates();
   } catch (error) {
     setUpdateStatus({
@@ -186,6 +187,14 @@ function checkForUpdates() {
       canRestart: false
     });
   }
+}
+
+function getUpdateFeedUrl() {
+  if (process.platform === "win32") {
+    return `https://github.com/${updateRepo}/releases/latest/download`;
+  }
+
+  return `https://update.electronjs.org/${updateRepo}/${process.platform}-${process.arch}/${app.getVersion()}`;
 }
 
 function setUpdateStatus(nextStatus: UpdateStatus) {

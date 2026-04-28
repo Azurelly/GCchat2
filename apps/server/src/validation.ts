@@ -60,6 +60,12 @@ export const toggleMessageReactionSchema = z
   })
   .strict();
 
+export const updateMessageSchema = z
+  .object({
+    content: z.string().trim().min(1, "Message cannot be empty.").max(4000)
+  })
+  .strict();
+
 export const channelNameSchema = z
   .string()
   .trim()

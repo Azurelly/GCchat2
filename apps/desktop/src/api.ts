@@ -1,5 +1,6 @@
 import type {
   AuthResponse,
+  AuditLogView,
   BootstrapPayload,
   CalendarEventView,
   ChannelSummary,
@@ -10,8 +11,10 @@ import type {
   CreateMessageRequest,
   DeleteChannelRequest,
   MessageView,
+  RestoreAuditLogResponse,
   SetCalendarEventOptInRequest,
   ToggleMessageReactionRequest,
+  UpdateMessageRequest,
   UpdateAccountRequest,
   UpdateCustomEmojiRequest,
   UpdateUserBanRequest,
@@ -106,6 +109,19 @@ export class ApiClient {
     });
   }
 
+  public updateMessage(messageId: string, input: UpdateMessageRequest) {
+    return this.request<MessageView>(`/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public deleteMessage(messageId: string) {
+    return this.request<{ id: string; channelId: string }>(`/messages/${messageId}`, {
+      method: "DELETE"
+    });
+  }
+
   public toggleMessageReaction(messageId: string, input: ToggleMessageReactionRequest) {
     return this.request<MessageView>(`/messages/${messageId}/reactions`, {
       method: "POST",
@@ -128,6 +144,22 @@ export class ApiClient {
     return this.request<CalendarEventView>(`/calendar/events/${eventId}/opt-in`, {
       method: "PATCH",
       body: JSON.stringify(input)
+    });
+  }
+
+  public deleteCalendarEvent(eventId: string) {
+    return this.request<{ id: string }>(`/calendar/events/${eventId}`, {
+      method: "DELETE"
+    });
+  }
+
+  public getAuditLogs() {
+    return this.request<AuditLogView[]>("/audit");
+  }
+
+  public restoreAuditLogEntry(logId: string) {
+    return this.request<RestoreAuditLogResponse>(`/audit/${logId}/restore`, {
+      method: "POST"
     });
   }
 

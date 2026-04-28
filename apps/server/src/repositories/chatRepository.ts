@@ -1,5 +1,6 @@
 import type {
   BootstrapPayload,
+  AuditLogView,
   CalendarEventView,
   ChannelSummary,
   CustomEmojiView,
@@ -9,6 +10,7 @@ import type {
   CreateMessageRequest,
   DeleteChannelRequest,
   MessageView,
+  RestoreAuditLogResponse,
   SetCalendarEventOptInRequest,
   ServerMemberView,
   ServerSummary,
@@ -18,6 +20,7 @@ import type {
   UpdateProfileRequest,
   UpdateUserRoleRequest,
   ToggleMessageReactionRequest,
+  UpdateMessageRequest,
   UserProfile
 } from "@gcchat/shared";
 
@@ -68,6 +71,11 @@ export interface ChatRepository {
   createMessage(
     input: { channelId: string; authorId: string } & CreateMessageRequest
   ): Promise<MessageView>;
+  updateMessage(
+    messageId: string,
+    input: { actorId: string } & UpdateMessageRequest
+  ): Promise<MessageView>;
+  deleteMessage(messageId: string, input: { actorId: string }): Promise<{ id: string; channelId: string }>;
   toggleMessageReaction(
     messageId: string,
     input: { userId: string } & ToggleMessageReactionRequest
@@ -76,11 +84,14 @@ export interface ChatRepository {
   createCalendarEvent(
     input: { creatorId: string } & CreateCalendarEventRequest
   ): Promise<CalendarEventView>;
+  deleteCalendarEvent(eventId: string, input: { actorId: string }): Promise<{ id: string }>;
   setCalendarEventOptIn(
     userId: string,
     eventId: string,
     input: SetCalendarEventOptInRequest
   ): Promise<CalendarEventView>;
+  listAuditLogs(actorId: string): Promise<AuditLogView[]>;
+  restoreAuditLogEntry(logId: string, input: { actorId: string }): Promise<RestoreAuditLogResponse>;
   listCustomEmojis(): Promise<CustomEmojiView[]>;
   createCustomEmoji(
     input: { actorId: string } & CreateCustomEmojiRequest

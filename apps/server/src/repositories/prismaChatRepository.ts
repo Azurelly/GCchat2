@@ -1,5 +1,7 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import {
+  type AuditAction,
+  type AuditLogView,
   GLOBAL_CHANNEL_NAME,
   GLOBAL_SERVER_NAME,
   type AttachmentView,
@@ -15,10 +17,12 @@ import {
   type MessageReactionView,
   type MessageReplyView,
   type MessageView,
+  type RestoreAuditLogResponse,
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
   type ToggleMessageReactionRequest,
+  type UpdateMessageRequest,
   type UpdateAccountRequest,
   type UpdateCustomEmojiRequest,
   type UpdateUserBanRequest,
@@ -49,6 +53,7 @@ type MessageWithRelations = {
   content: string;
   createdAt: Date;
   editedAt: Date | null;
+  deletedAt: Date | null;
   author: UserWithProfile;
   attachments: AttachmentView[];
   replyTo: MessageReplyWithRelations | null;
@@ -59,6 +64,8 @@ type MessageReplyWithRelations = {
   id: string;
   content: string;
   createdAt: Date;
+  editedAt: Date | null;
+  deletedAt: Date | null;
   author: UserWithProfile;
   attachments: AttachmentView[];
 };
@@ -75,6 +82,7 @@ type CalendarEventWithRelations = {
   description: string;
   startAt: Date;
   createdAt: Date;
+  deletedAt: Date | null;
   creator: UserWithProfile;
   optIns: Array<{
     createdAt: Date;
@@ -92,6 +100,21 @@ type CustomEmojiWithRelations = {
   createdBy: UserWithProfile;
 };
 
+type AuditLogWithRelations = {
+  id: string;
+  action: AuditAction;
+  actorId: string | null;
+  targetUserId: string | null;
+  messageId: string | null;
+  channelId: string | null;
+  calendarEventId: string | null;
+  metadata: Prisma.JsonValue;
+  restoredAt: Date | null;
+  createdAt: Date;
+  actor: UserWithProfile | null;
+  targetUser: UserWithProfile | null;
+};
+
 const GLOBAL_SERVER_KEY = "global";
 
 const calendarEventInclude = {
@@ -104,6 +127,11 @@ const calendarEventInclude = {
 
 const customEmojiInclude = {
   createdBy: { include: { profile: true } }
+};
+
+const auditLogInclude = {
+  actor: { include: { profile: true } },
+  targetUser: { include: { profile: true } }
 };
 
 const messageInclude = {
@@ -391,6 +419,16 @@ export class PrismaChatRepository implements ChatRepository {
       include: { profile: true }
     });
 
+    await this.createAuditLog({
+      action: "USER_ROLE_UPDATE",
+      actorId: input.actorId,
+      targetUserId,
+      metadata: {
+        beforeRole: target.role,
+        afterRole: input.role
+      }
+    });
+
     return mapUserProfile(user);
   }
 
@@ -420,6 +458,15 @@ export class PrismaChatRepository implements ChatRepository {
       include: { profile: true }
     });
 
+    await this.createAuditLog({
+      action: input.banned ? "USER_BAN" : "USER_UNBAN",
+      actorId: input.actorId,
+      targetUserId,
+      metadata: {
+        bannedAt: user.bannedAt?.toISOString() ?? null
+      }
+    });
+
     return mapUserProfile(user);
   }
 
@@ -446,7 +493,7 @@ export class PrismaChatRepository implements ChatRepository {
 
   public async listMessages(channelId: string, limit: number): Promise<MessageView[]> {
     const messages = await this.prisma.message.findMany({
-      where: { channelId },
+      where: { channelId, deletedAt: null },
       include: messageInclude,
       orderBy: { createdAt: "desc" },
       take: limit
@@ -464,10 +511,10 @@ export class PrismaChatRepository implements ChatRepository {
     if (replyToId) {
       const replyTo = await this.prisma.message.findUnique({
         where: { id: replyToId },
-        select: { channelId: true }
+        select: { channelId: true, deletedAt: true }
       });
 
-      if (!replyTo || replyTo.channelId !== input.channelId) {
+      if (!replyTo || replyTo.channelId !== input.channelId || replyTo.deletedAt) {
         throw new HttpError(400, "Reply target must be in this channel");
       }
     }
@@ -505,6 +552,102 @@ export class PrismaChatRepository implements ChatRepository {
     return mapMessage(message);
   }
 
+  public async updateMessage(
+    messageId: string,
+    input: { actorId: string } & UpdateMessageRequest
+  ): Promise<MessageView> {
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        deletedAt: null,
+        channel: { server: { memberships: { some: { userId: input.actorId } } } }
+      },
+      include: messageInclude
+    });
+
+    if (!message) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    if (message.author.id !== input.actorId) {
+      throw new HttpError(403, "You can only edit your own messages");
+    }
+
+    const nextContent = input.content.trim();
+
+    if (!nextContent) {
+      throw new HttpError(400, "Message cannot be empty");
+    }
+
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: { content: nextContent, editedAt: new Date() },
+      include: messageInclude
+    });
+
+    await this.createAuditLog({
+      action: "MESSAGE_EDIT",
+      actorId: input.actorId,
+      targetUserId: message.author.id,
+      messageId,
+      channelId: message.channelId,
+      metadata: {
+        before: {
+          content: message.content,
+          editedAt: message.editedAt?.toISOString() ?? null
+        },
+        after: {
+          content: updated.content,
+          editedAt: updated.editedAt?.toISOString() ?? null
+        }
+      }
+    });
+
+    return mapMessage(updated);
+  }
+
+  public async deleteMessage(
+    messageId: string,
+    input: { actorId: string }
+  ): Promise<{ id: string; channelId: string }> {
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        deletedAt: null,
+        channel: { server: { memberships: { some: { userId: input.actorId } } } }
+      },
+      include: messageInclude
+    });
+
+    if (!message) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    if (message.author.id !== input.actorId) {
+      await this.assertSuperAdmin(input.actorId);
+    }
+
+    const deletedAt = new Date();
+    await this.prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt, deletedById: input.actorId }
+    });
+
+    await this.createAuditLog({
+      action: "MESSAGE_DELETE",
+      actorId: input.actorId,
+      targetUserId: message.author.id,
+      messageId,
+      channelId: message.channelId,
+      metadata: {
+        deletedAt: deletedAt.toISOString(),
+        message: messageAuditSnapshot(message)
+      }
+    });
+
+    return { id: message.id, channelId: message.channelId };
+  }
+
   public async toggleMessageReaction(
     messageId: string,
     input: { userId: string } & ToggleMessageReactionRequest
@@ -518,6 +661,7 @@ export class PrismaChatRepository implements ChatRepository {
     const message = await this.prisma.message.findFirst({
       where: {
         id: messageId,
+        deletedAt: null,
         channel: {
           server: {
             memberships: { some: { userId: input.userId } }
@@ -575,6 +719,7 @@ export class PrismaChatRepository implements ChatRepository {
 
   public async listCalendarEvents(viewerId: string): Promise<CalendarEventView[]> {
     const events = await this.prisma.calendarEvent.findMany({
+      where: { deletedAt: null },
       include: calendarEventInclude,
       orderBy: [{ startAt: "asc" }, { createdAt: "asc" }]
     });
@@ -597,6 +742,41 @@ export class PrismaChatRepository implements ChatRepository {
     });
 
     return mapCalendarEvent(event, input.creatorId);
+  }
+
+  public async deleteCalendarEvent(
+    eventId: string,
+    input: { actorId: string }
+  ): Promise<{ id: string }> {
+    const event = await this.prisma.calendarEvent.findUnique({
+      where: { id: eventId },
+      include: calendarEventInclude
+    });
+
+    if (!event || event.deletedAt) {
+      throw new HttpError(404, "Calendar event not found");
+    }
+
+    if (event.creator.id !== input.actorId) {
+      await this.assertAdmin(input.actorId);
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.auditLog.create({
+        data: {
+          action: "CALENDAR_EVENT_DELETE",
+          actorId: input.actorId,
+          targetUserId: event.creator.id,
+          calendarEventId: event.id,
+          metadata: {
+            event: calendarEventAuditSnapshot(event)
+          }
+        }
+      });
+      await tx.calendarEvent.delete({ where: { id: event.id } });
+    });
+
+    return { id: event.id };
   }
 
   public async setCalendarEventOptIn(
@@ -635,6 +815,97 @@ export class PrismaChatRepository implements ChatRepository {
     }
 
     return mapCalendarEvent(updated, userId);
+  }
+
+  public async listAuditLogs(actorId: string): Promise<AuditLogView[]> {
+    await this.assertSuperAdmin(actorId);
+
+    const logs = await this.prisma.auditLog.findMany({
+      include: auditLogInclude,
+      orderBy: { createdAt: "desc" },
+      take: 200
+    });
+
+    return logs.map(mapAuditLog);
+  }
+
+  public async restoreAuditLogEntry(
+    logId: string,
+    input: { actorId: string }
+  ): Promise<RestoreAuditLogResponse> {
+    await this.assertSuperAdmin(input.actorId);
+
+    const log = await this.prisma.auditLog.findUnique({
+      where: { id: logId },
+      include: auditLogInclude
+    });
+
+    if (!log) {
+      throw new HttpError(404, "Audit log entry not found");
+    }
+
+    if (log.restoredAt) {
+      throw new HttpError(400, "This audit entry has already been restored");
+    }
+
+    if (log.action === "MESSAGE_DELETE" && log.messageId) {
+      const message = await this.prisma.message.update({
+        where: { id: log.messageId },
+        data: { deletedAt: null, deletedById: null },
+        include: messageInclude
+      });
+
+      const updatedLog = await this.markAuditLogRestored(log.id, input.actorId);
+      await this.createAuditLog({
+        action: "MESSAGE_RESTORE",
+        actorId: input.actorId,
+        targetUserId: message.author.id,
+        messageId: message.id,
+        channelId: message.channelId,
+        metadata: { restoredFromAuditLogId: log.id }
+      });
+
+      return { auditLog: updatedLog, message: mapMessage(message), event: null };
+    }
+
+    if (log.action === "CALENDAR_EVENT_DELETE") {
+      const snapshot = readCalendarEventSnapshot(log.metadata);
+
+      if (!snapshot) {
+        throw new HttpError(400, "This audit entry cannot be restored");
+      }
+
+      const event = await this.prisma.calendarEvent.create({
+        data: {
+          id: snapshot.id,
+          creatorId: snapshot.creatorId,
+          title: snapshot.title,
+          description: snapshot.description,
+          startAt: new Date(snapshot.startAt),
+          createdAt: new Date(snapshot.createdAt),
+          optIns: {
+            create: snapshot.optIns.map((optIn) => ({
+              userId: optIn.userId,
+              createdAt: new Date(optIn.createdAt)
+            }))
+          }
+        },
+        include: calendarEventInclude
+      });
+
+      const updatedLog = await this.markAuditLogRestored(log.id, input.actorId);
+      await this.createAuditLog({
+        action: "CALENDAR_EVENT_RESTORE",
+        actorId: input.actorId,
+        targetUserId: event.creator.id,
+        calendarEventId: event.id,
+        metadata: { restoredFromAuditLogId: log.id }
+      });
+
+      return { auditLog: updatedLog, message: null, event: mapCalendarEvent(event, input.actorId) };
+    }
+
+    throw new HttpError(400, "This audit entry cannot be restored");
   }
 
   public async listCustomEmojis(): Promise<CustomEmojiView[]> {
@@ -724,6 +995,41 @@ export class PrismaChatRepository implements ChatRepository {
     return this.listCustomEmojis();
   }
 
+  private async createAuditLog(input: {
+    action: AuditAction;
+    actorId: string;
+    targetUserId?: string | null;
+    messageId?: string | null;
+    channelId?: string | null;
+    calendarEventId?: string | null;
+    metadata: Prisma.InputJsonValue;
+  }) {
+    const entry = await this.prisma.auditLog.create({
+      data: {
+        action: input.action,
+        actorId: input.actorId,
+        targetUserId: input.targetUserId,
+        messageId: input.messageId,
+        channelId: input.channelId,
+        calendarEventId: input.calendarEventId,
+        metadata: input.metadata
+      },
+      include: auditLogInclude
+    });
+
+    return mapAuditLog(entry);
+  }
+
+  private async markAuditLogRestored(logId: string, actorId: string) {
+    const updated = await this.prisma.auditLog.update({
+      where: { id: logId },
+      data: { restoredAt: new Date(), restoredById: actorId },
+      include: auditLogInclude
+    });
+
+    return mapAuditLog(updated);
+  }
+
   private async assertAdmin(userId: string) {
     const user = await this.getProfile(userId);
 
@@ -791,6 +1097,7 @@ function mapMessage(message: MessageWithRelations): MessageView {
     content: message.content,
     createdAt: message.createdAt.toISOString(),
     editedAt: message.editedAt?.toISOString() ?? null,
+    deletedAt: message.deletedAt?.toISOString() ?? null,
     author: mapUserProfile(message.author),
     attachments: message.attachments.map(mapAttachment),
     replyTo: message.replyTo ? mapMessageReply(message.replyTo) : null,
@@ -803,6 +1110,8 @@ function mapMessageReply(message: MessageReplyWithRelations): MessageReplyView {
     id: message.id,
     content: message.content,
     createdAt: message.createdAt.toISOString(),
+    editedAt: message.editedAt?.toISOString() ?? null,
+    deletedAt: message.deletedAt?.toISOString() ?? null,
     author: mapUserProfile(message.author),
     attachments: message.attachments.map(mapAttachment)
   };
@@ -850,6 +1159,7 @@ function mapCalendarEvent(
     description: event.description,
     startAt: event.startAt.toISOString(),
     createdAt: event.createdAt.toISOString(),
+    deletedAt: event.deletedAt?.toISOString() ?? null,
     creator: mapUserProfile(event.creator),
     optIns: event.optIns.map((optIn) => ({
       user: mapUserProfile(optIn.user),
@@ -868,6 +1178,101 @@ function mapCustomEmoji(emoji: CustomEmojiWithRelations): CustomEmojiView {
     createdAt: emoji.createdAt.toISOString(),
     updatedAt: emoji.updatedAt.toISOString(),
     createdBy: mapUserProfile(emoji.createdBy)
+  };
+}
+
+function mapAuditLog(entry: AuditLogWithRelations): AuditLogView {
+  return {
+    id: entry.id,
+    action: entry.action,
+    createdAt: entry.createdAt.toISOString(),
+    actor: entry.actor ? mapUserProfile(entry.actor) : null,
+    targetUser: entry.targetUser ? mapUserProfile(entry.targetUser) : null,
+    messageId: entry.messageId,
+    channelId: entry.channelId,
+    calendarEventId: entry.calendarEventId,
+    metadata: entry.metadata,
+    restorable:
+      !entry.restoredAt &&
+      (entry.action === "MESSAGE_DELETE" || entry.action === "CALENDAR_EVENT_DELETE")
+  };
+}
+
+function messageAuditSnapshot(message: MessageWithRelations): Prisma.InputJsonObject {
+  return {
+    id: message.id,
+    channelId: message.channelId,
+    content: message.content,
+    createdAt: message.createdAt.toISOString(),
+    editedAt: message.editedAt?.toISOString() ?? null,
+    author: mapUserProfile(message.author) as unknown as Prisma.InputJsonObject,
+    attachments: message.attachments.map((attachment) => ({
+      id: attachment.id,
+      url: attachment.url,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      size: attachment.size
+    }))
+  };
+}
+
+function calendarEventAuditSnapshot(event: CalendarEventWithRelations): Prisma.InputJsonObject {
+  return {
+    id: event.id,
+    creatorId: event.creator.id,
+    title: event.title,
+    description: event.description,
+    startAt: event.startAt.toISOString(),
+    createdAt: event.createdAt.toISOString(),
+    optIns: event.optIns.map((optIn) => ({
+      userId: optIn.user.id,
+      createdAt: optIn.createdAt.toISOString()
+    }))
+  };
+}
+
+function readCalendarEventSnapshot(metadata: Prisma.JsonValue) {
+  const root = metadata as {
+    event?: {
+      id?: unknown;
+      creatorId?: unknown;
+      title?: unknown;
+      description?: unknown;
+      startAt?: unknown;
+      createdAt?: unknown;
+      optIns?: Array<{ userId?: unknown; createdAt?: unknown }>;
+    };
+  };
+  const event = root.event;
+
+  if (
+    !event ||
+    typeof event.id !== "string" ||
+    typeof event.creatorId !== "string" ||
+    typeof event.title !== "string" ||
+    typeof event.description !== "string" ||
+    typeof event.startAt !== "string" ||
+    typeof event.createdAt !== "string" ||
+    !Array.isArray(event.optIns)
+  ) {
+    return null;
+  }
+
+  return {
+    id: event.id,
+    creatorId: event.creatorId,
+    title: event.title,
+    description: event.description,
+    startAt: event.startAt,
+    createdAt: event.createdAt,
+    optIns: event.optIns
+      .filter(
+        (optIn): optIn is { userId: string; createdAt: string } =>
+          typeof optIn.userId === "string" && typeof optIn.createdAt === "string"
+      )
+      .filter(
+        (optIn, index, list) => list.findIndex((candidate) => candidate.userId === optIn.userId) === index
+      )
   };
 }
 

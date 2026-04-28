@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   GLOBAL_CHANNEL_NAME,
   GLOBAL_SERVER_NAME,
+  type AuditAction,
+  type AuditLogView,
   type BootstrapPayload,
   type CalendarEventView,
   type ChannelSummary,
@@ -12,10 +14,12 @@ import {
   type CreateMessageRequest,
   type DeleteChannelRequest,
   type MessageView,
+  type RestoreAuditLogResponse,
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
   type ToggleMessageReactionRequest,
+  type UpdateMessageRequest,
   type UpdateAccountRequest,
   type UpdateCustomEmojiRequest,
   type UpdateUserBanRequest,
@@ -61,6 +65,8 @@ interface StoredMessage {
   content: string;
   createdAt: Date;
   editedAt: Date | null;
+  deletedAt: Date | null;
+  deletedById: string | null;
   attachments: Array<{
     id: string;
     url: string;
@@ -85,6 +91,29 @@ interface StoredCalendarEvent {
   startAt: Date;
   createdAt: Date;
   optInUserIds: Set<string>;
+}
+
+interface StoredAuditLog {
+  id: string;
+  action: AuditAction;
+  actorId: string | null;
+  targetUserId: string | null;
+  messageId: string | null;
+  channelId: string | null;
+  calendarEventId: string | null;
+  metadata: unknown;
+  restoredAt: Date | null;
+  createdAt: Date;
+}
+
+interface StoredCalendarEventSnapshot {
+  id: string;
+  creatorId: string;
+  title: string;
+  description: string;
+  startAt: string;
+  createdAt: string;
+  optIns: Array<{ userId: string; createdAt: string }>;
 }
 
 interface StoredCustomEmoji {
@@ -117,6 +146,7 @@ export class InMemoryChatRepository implements ChatRepository {
   private readonly messageReactions: StoredMessageReaction[] = [];
   private readonly calendarEvents: StoredCalendarEvent[] = [];
   private readonly customEmojis: StoredCustomEmoji[] = [];
+  private readonly auditLogs: StoredAuditLog[] = [];
 
   public async ensureGlobalCommunity(): Promise<GlobalCommunity> {
     return { server: this.server, channel: this.channels[0] };
@@ -323,7 +353,14 @@ export class InMemoryChatRepository implements ChatRepository {
       throw new HttpError(400, "Super admins cannot be changed here");
     }
 
+    const beforeRole = target.role;
     target.role = input.role;
+    this.createAuditLog({
+      action: "USER_ROLE_UPDATE",
+      actorId: input.actorId,
+      targetUserId,
+      metadata: { beforeRole, afterRole: input.role }
+    });
     return this.mapUser(target);
   }
 
@@ -348,6 +385,12 @@ export class InMemoryChatRepository implements ChatRepository {
     }
 
     target.bannedAt = input.banned ? new Date() : null;
+    this.createAuditLog({
+      action: input.banned ? "USER_BAN" : "USER_UNBAN",
+      actorId: input.actorId,
+      targetUserId,
+      metadata: { bannedAt: target.bannedAt?.toISOString() ?? null }
+    });
     return this.mapUser(target);
   }
 
@@ -364,7 +407,7 @@ export class InMemoryChatRepository implements ChatRepository {
 
   public async listMessages(channelId: string, limit: number): Promise<MessageView[]> {
     return this.messages
-      .filter((message) => message.channelId === channelId)
+      .filter((message) => message.channelId === channelId && !message.deletedAt)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
       .slice(-limit)
       .map((message) => this.mapMessage(message));
@@ -378,7 +421,7 @@ export class InMemoryChatRepository implements ChatRepository {
     if (replyToId) {
       const replyTo = this.messages.find((candidate) => candidate.id === replyToId);
 
-      if (!replyTo || replyTo.channelId !== input.channelId) {
+      if (!replyTo || replyTo.channelId !== input.channelId || replyTo.deletedAt) {
         throw new HttpError(400, "Reply target must be in this channel");
       }
     }
@@ -391,6 +434,8 @@ export class InMemoryChatRepository implements ChatRepository {
       content: input.content,
       createdAt: new Date(Date.now() + this.messages.length),
       editedAt: null,
+      deletedAt: null,
+      deletedById: null,
       attachments:
         input.attachments?.map((attachment) => ({ id: randomUUID(), ...attachment })) ?? []
     };
@@ -405,13 +450,77 @@ export class InMemoryChatRepository implements ChatRepository {
     return this.mapMessage(message);
   }
 
+  public async updateMessage(
+    messageId: string,
+    input: { actorId: string } & UpdateMessageRequest
+  ): Promise<MessageView> {
+    const message = this.messages.find((candidate) => candidate.id === messageId && !candidate.deletedAt);
+
+    if (!message || !(await this.userHasChannelAccess(input.actorId, message.channelId))) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    if (message.authorId !== input.actorId) {
+      throw new HttpError(403, "You can only edit your own messages");
+    }
+
+    const before = message.content;
+    message.content = input.content.trim();
+    message.editedAt = new Date();
+    this.createAuditLog({
+      action: "MESSAGE_EDIT",
+      actorId: input.actorId,
+      targetUserId: message.authorId,
+      messageId: message.id,
+      channelId: message.channelId,
+      metadata: { before: { content: before }, after: { content: message.content } }
+    });
+
+    return this.mapMessage(message);
+  }
+
+  public async deleteMessage(
+    messageId: string,
+    input: { actorId: string }
+  ): Promise<{ id: string; channelId: string }> {
+    const message = this.messages.find((candidate) => candidate.id === messageId && !candidate.deletedAt);
+
+    if (!message || !(await this.userHasChannelAccess(input.actorId, message.channelId))) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    if (message.authorId !== input.actorId) {
+      await this.assertSuperAdmin(input.actorId);
+    }
+
+    message.deletedAt = new Date();
+    message.deletedById = input.actorId;
+    this.createAuditLog({
+      action: "MESSAGE_DELETE",
+      actorId: input.actorId,
+      targetUserId: message.authorId,
+      messageId: message.id,
+      channelId: message.channelId,
+      metadata: {
+        message: {
+          id: message.id,
+          channelId: message.channelId,
+          content: message.content,
+          attachments: message.attachments
+        }
+      }
+    });
+
+    return { id: message.id, channelId: message.channelId };
+  }
+
   public async toggleMessageReaction(
     messageId: string,
     input: { userId: string } & ToggleMessageReactionRequest
   ): Promise<MessageView> {
     const message = this.messages.find((candidate) => candidate.id === messageId);
 
-    if (!message || !(await this.userHasChannelAccess(input.userId, message.channelId))) {
+    if (!message || message.deletedAt || !(await this.userHasChannelAccess(input.userId, message.channelId))) {
       throw new HttpError(404, "Message not found");
     }
 
@@ -470,6 +579,41 @@ export class InMemoryChatRepository implements ChatRepository {
     return this.mapCalendarEvent(event, input.creatorId);
   }
 
+  public async deleteCalendarEvent(eventId: string, input: { actorId: string }): Promise<{ id: string }> {
+    const event = this.calendarEvents.find((candidate) => candidate.id === eventId);
+
+    if (!event) {
+      throw new HttpError(404, "Calendar event not found");
+    }
+
+    if (event.creatorId !== input.actorId) {
+      await this.assertAdmin(input.actorId);
+    }
+
+    this.createAuditLog({
+      action: "CALENDAR_EVENT_DELETE",
+      actorId: input.actorId,
+      targetUserId: event.creatorId,
+      calendarEventId: event.id,
+      metadata: {
+        event: {
+          id: event.id,
+          creatorId: event.creatorId,
+          title: event.title,
+          description: event.description,
+          startAt: event.startAt.toISOString(),
+          createdAt: event.createdAt.toISOString(),
+          optIns: [...event.optInUserIds].map((userId) => ({
+            userId,
+            createdAt: event.createdAt.toISOString()
+          }))
+        }
+      }
+    });
+    this.calendarEvents.splice(this.calendarEvents.indexOf(event), 1);
+    return { id: eventId };
+  }
+
   public async setCalendarEventOptIn(
     userId: string,
     eventId: string,
@@ -488,6 +632,82 @@ export class InMemoryChatRepository implements ChatRepository {
     }
 
     return this.mapCalendarEvent(event, userId);
+  }
+
+  public async listAuditLogs(actorId: string): Promise<AuditLogView[]> {
+    await this.assertSuperAdmin(actorId);
+    return this.auditLogs
+      .slice()
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map((entry) => this.mapAuditLog(entry));
+  }
+
+  public async restoreAuditLogEntry(
+    logId: string,
+    input: { actorId: string }
+  ): Promise<RestoreAuditLogResponse> {
+    await this.assertSuperAdmin(input.actorId);
+    const log = this.auditLogs.find((entry) => entry.id === logId);
+
+    if (!log) {
+      throw new HttpError(404, "Audit log entry not found");
+    }
+
+    if (log.restoredAt) {
+      throw new HttpError(400, "This audit entry has already been restored");
+    }
+
+    log.restoredAt = new Date();
+
+    if (log.action === "MESSAGE_DELETE" && log.messageId) {
+      const message = this.messages.find((candidate) => candidate.id === log.messageId);
+
+      if (!message) {
+        throw new HttpError(404, "Message not found");
+      }
+
+      message.deletedAt = null;
+      message.deletedById = null;
+      this.createAuditLog({
+        action: "MESSAGE_RESTORE",
+        actorId: input.actorId,
+        targetUserId: message.authorId,
+        messageId: message.id,
+        channelId: message.channelId,
+        metadata: { restoredFromAuditLogId: log.id }
+      });
+      return { auditLog: this.mapAuditLog(log), message: this.mapMessage(message), event: null };
+    }
+
+    if (log.action === "CALENDAR_EVENT_DELETE") {
+      const snapshot = (log.metadata as { event?: StoredCalendarEventSnapshot }).event;
+
+      if (!snapshot) {
+        throw new HttpError(400, "This audit entry cannot be restored");
+      }
+
+      const event: StoredCalendarEvent = {
+        id: snapshot.id,
+        creatorId: snapshot.creatorId,
+        title: snapshot.title,
+        description: snapshot.description,
+        startAt: new Date(snapshot.startAt),
+        createdAt: new Date(snapshot.createdAt),
+        optInUserIds: new Set(snapshot.optIns.map((optIn) => optIn.userId))
+      };
+
+      this.calendarEvents.push(event);
+      this.createAuditLog({
+        action: "CALENDAR_EVENT_RESTORE",
+        actorId: input.actorId,
+        targetUserId: event.creatorId,
+        calendarEventId: event.id,
+        metadata: { restoredFromAuditLogId: log.id }
+      });
+      return { auditLog: this.mapAuditLog(log), message: null, event: this.mapCalendarEvent(event, input.actorId) };
+    }
+
+    throw new HttpError(400, "This audit entry cannot be restored");
   }
 
   public async listCustomEmojis(): Promise<CustomEmojiView[]> {
@@ -604,6 +824,7 @@ export class InMemoryChatRepository implements ChatRepository {
       content: message.content,
       createdAt: message.createdAt.toISOString(),
       editedAt: message.editedAt?.toISOString() ?? null,
+      deletedAt: message.deletedAt?.toISOString() ?? null,
       author: this.mapUser(user),
       attachments: message.attachments,
       replyTo: message.replyToId ? this.mapMessageReply(message.replyToId) : null,
@@ -628,6 +849,8 @@ export class InMemoryChatRepository implements ChatRepository {
       id: message.id,
       content: message.content,
       createdAt: message.createdAt.toISOString(),
+      editedAt: message.editedAt?.toISOString() ?? null,
+      deletedAt: message.deletedAt?.toISOString() ?? null,
       author: this.mapUser(user),
       attachments: message.attachments
     };
@@ -673,6 +896,7 @@ export class InMemoryChatRepository implements ChatRepository {
       description: event.description,
       startAt: event.startAt.toISOString(),
       createdAt: event.createdAt.toISOString(),
+      deletedAt: null,
       creator: this.mapUser(creator),
       optIns: [...event.optInUserIds].map((userId) => {
         const user = this.users.get(userId);
@@ -705,6 +929,49 @@ export class InMemoryChatRepository implements ChatRepository {
       createdAt: emoji.createdAt.toISOString(),
       updatedAt: emoji.updatedAt.toISOString(),
       createdBy: this.mapUser(creator)
+    };
+  }
+
+  private createAuditLog(input: {
+    action: AuditAction;
+    actorId: string;
+    targetUserId?: string | null;
+    messageId?: string | null;
+    channelId?: string | null;
+    calendarEventId?: string | null;
+    metadata: unknown;
+  }) {
+    this.auditLogs.push({
+      id: randomUUID(),
+      action: input.action,
+      actorId: input.actorId,
+      targetUserId: input.targetUserId ?? null,
+      messageId: input.messageId ?? null,
+      channelId: input.channelId ?? null,
+      calendarEventId: input.calendarEventId ?? null,
+      metadata: input.metadata,
+      restoredAt: null,
+      createdAt: new Date(Date.now() + this.auditLogs.length)
+    });
+  }
+
+  private mapAuditLog(entry: StoredAuditLog): AuditLogView {
+    const actor = entry.actorId ? this.users.get(entry.actorId) : null;
+    const target = entry.targetUserId ? this.users.get(entry.targetUserId) : null;
+
+    return {
+      id: entry.id,
+      action: entry.action,
+      createdAt: entry.createdAt.toISOString(),
+      actor: actor ? this.mapUser(actor) : null,
+      targetUser: target ? this.mapUser(target) : null,
+      messageId: entry.messageId,
+      channelId: entry.channelId,
+      calendarEventId: entry.calendarEventId,
+      metadata: entry.metadata,
+      restorable:
+        !entry.restoredAt &&
+        (entry.action === "MESSAGE_DELETE" || entry.action === "CALENDAR_EVENT_DELETE")
     };
   }
 

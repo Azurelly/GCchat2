@@ -13,11 +13,14 @@ const storage = createAssetStorage(env);
 const realtime: RealtimePublisher = {
   emitMessage: () => undefined,
   emitMessageUpdated: () => undefined,
+  emitMessageDeleted: () => undefined,
   emitProfileUpdated: () => undefined,
   emitMembersUpdated: () => undefined,
   emitChannelsUpdated: () => undefined,
   emitSessionBanned: () => undefined,
   emitCalendarEvent: () => undefined,
+  emitCalendarEventDeleted: () => undefined,
+  emitAuditLog: () => undefined,
   emitEmojisUpdated: () => undefined
 };
 

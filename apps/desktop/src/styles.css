@@ -313,6 +313,10 @@ select:focus {
   grid-template-columns: 72px minmax(0, 1fr);
 }
 
+.audit-shell {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
 .server-rail {
   min-height: 0;
   overflow: hidden;
@@ -667,6 +671,42 @@ select:focus {
   opacity: 0.62;
 }
 
+.message-row.compact {
+  grid-template-columns: 56px minmax(0, 1fr);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.compact-time {
+  align-self: start;
+  justify-self: end;
+  margin-top: 3px;
+  padding-right: 12px;
+  color: #72767d;
+  font-size: 10px;
+  opacity: 0;
+}
+
+.message-row.compact:hover .compact-time {
+  opacity: 1;
+}
+
+.message-flash {
+  animation: message-flash 1.4s ease;
+}
+
+@keyframes message-flash {
+  0%,
+  100% {
+    background: transparent;
+  }
+
+  15%,
+  70% {
+    background: rgba(88, 101, 242, 0.28);
+  }
+}
+
 .message-context-menu {
   position: fixed;
   z-index: 50;
@@ -700,6 +740,15 @@ select:focus {
 .reaction-menu header button:hover {
   color: #fff;
   background: #3f4147;
+}
+
+.message-context-menu > button.danger {
+  color: #ffb4b6;
+}
+
+.message-context-menu > button.danger:hover {
+  color: #fff;
+  background: #da373c;
 }
 
 .reaction-menu {
@@ -861,6 +910,17 @@ select:focus {
 .message-meta time {
   color: #949ba4;
   font-size: 12px;
+}
+
+.edited-mark {
+  color: #949ba4;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.compact-edited {
+  display: inline-block;
+  margin-right: 6px;
 }
 
 .message-reply-preview {
@@ -1845,6 +1905,25 @@ select:focus {
   opacity: 0.75;
 }
 
+.event-delete-button {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 4px;
+  padding: 0 12px;
+  color: #ffb4b6;
+  background: #3b1f22;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.event-delete-button:hover {
+  color: #fff;
+  background: #da373c;
+}
+
 .event-attendees {
   display: flex;
   flex-wrap: wrap;
@@ -1877,6 +1956,88 @@ select:focus {
   display: grid;
   align-content: start;
   gap: 8px;
+}
+
+.audit-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+  overflow: hidden;
+  background: #313338;
+}
+
+.audit-content {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  padding: 18px;
+}
+
+.audit-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #24262b;
+  border-radius: 8px;
+  padding: 14px;
+  background: #2b2d31;
+}
+
+.audit-card header,
+.audit-card header > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.audit-card header {
+  justify-content: space-between;
+}
+
+.audit-action {
+  color: #f2f3f5;
+  font-weight: 900;
+}
+
+.audit-card time,
+.audit-card p {
+  color: #b5bac1;
+}
+
+.audit-card p {
+  margin: 0;
+}
+
+.audit-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.audit-diff div {
+  min-width: 0;
+}
+
+.audit-diff strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #f2f3f5;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.audit-diff pre {
+  min-height: 56px;
+  overflow: auto;
+  border-radius: 6px;
+  margin: 0;
+  padding: 10px;
+  color: #dbdee1;
+  background: #1e1f22;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .agenda-row {

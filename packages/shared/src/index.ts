@@ -3,6 +3,15 @@ export const GLOBAL_CHANNEL_NAME = "general";
 
 export type UploadKind = "avatar" | "attachment" | "emoji";
 export type UserRole = "USER" | "ADMIN" | "SUPER_ADMIN";
+export type AuditAction =
+  | "MESSAGE_DELETE"
+  | "MESSAGE_RESTORE"
+  | "MESSAGE_EDIT"
+  | "USER_BAN"
+  | "USER_UNBAN"
+  | "USER_ROLE_UPDATE"
+  | "CALENDAR_EVENT_DELETE"
+  | "CALENDAR_EVENT_RESTORE";
 
 export interface ApiErrorResponse {
   error: string;
@@ -51,6 +60,7 @@ export interface MessageView {
   content: string;
   createdAt: string;
   editedAt: string | null;
+  deletedAt: string | null;
   author: UserProfile;
   attachments: AttachmentView[];
   replyTo: MessageReplyView | null;
@@ -61,6 +71,8 @@ export interface MessageReplyView {
   id: string;
   content: string;
   createdAt: string;
+  editedAt: string | null;
+  deletedAt: string | null;
   author: UserProfile;
   attachments: AttachmentView[];
 }
@@ -82,6 +94,7 @@ export interface CalendarEventView {
   description: string;
   startAt: string;
   createdAt: string;
+  deletedAt: string | null;
   creator: UserProfile;
   optIns: CalendarEventOptInView[];
   viewerOptedIn: boolean;
@@ -95,6 +108,19 @@ export interface CustomEmojiView {
   createdAt: string;
   updatedAt: string;
   createdBy: UserProfile;
+}
+
+export interface AuditLogView {
+  id: string;
+  action: AuditAction;
+  createdAt: string;
+  actor: UserProfile | null;
+  targetUser: UserProfile | null;
+  messageId: string | null;
+  channelId: string | null;
+  calendarEventId: string | null;
+  metadata: unknown;
+  restorable: boolean;
 }
 
 export interface BootstrapPayload {
@@ -150,6 +176,10 @@ export interface CreateMessageRequest {
   }>;
 }
 
+export interface UpdateMessageRequest {
+  content: string;
+}
+
 export interface ToggleMessageReactionRequest {
   emoji: string;
 }
@@ -180,6 +210,12 @@ export interface SetCalendarEventOptInRequest {
   optedIn: boolean;
 }
 
+export interface RestoreAuditLogResponse {
+  auditLog: AuditLogView;
+  message: MessageView | null;
+  event: CalendarEventView | null;
+}
+
 export interface CreateCustomEmojiRequest {
   name: string;
   imageUrl: string;
@@ -204,10 +240,13 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
   "message:new": (message: MessageView) => void;
   "message:updated": (message: MessageView) => void;
+  "message:deleted": (payload: { id: string; channelId: string }) => void;
   "profile:updated": (profile: UserProfile) => void;
   "members:updated": (members: ServerMemberView[]) => void;
   "channels:updated": (channels: ChannelSummary[]) => void;
   "session:banned": () => void;
   "calendar:event:upsert": (event: CalendarEventView) => void;
+  "calendar:event:deleted": (payload: { id: string }) => void;
+  "audit:new": (entry: AuditLogView) => void;
   "emojis:updated": (emojis: CustomEmojiView[]) => void;
 }
