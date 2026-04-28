@@ -12,7 +12,7 @@
     "typecheck": "pnpm --recursive typecheck",
     "test": "pnpm --filter @gcchat/server test",
     "make:desktop": "pnpm --filter @gcchat/desktop make",
-    "publish:desktop": "pnpm --filter @gcchat/desktop publish",
+    "publish:desktop": "pnpm --filter @gcchat/desktop run publish",
     "prisma:generate": "pnpm --filter @gcchat/server prisma:generate",
     "prisma:migrate": "pnpm --filter @gcchat/server prisma:migrate",
     "prisma:deploy": "pnpm --filter @gcchat/server prisma:deploy",
