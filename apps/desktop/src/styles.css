@@ -745,12 +745,13 @@ select:focus {
 
 .voice-status-tools {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
 }
 
 .voice-status-button,
-.voice-status-join {
+.voice-status-join,
+.voice-status-debug {
   height: 30px;
   display: grid;
   place-items: center;
@@ -761,7 +762,8 @@ select:focus {
 }
 
 .voice-status-button:hover,
-.voice-status-join:hover {
+.voice-status-join:hover,
+.voice-status-debug:hover {
   color: #fff;
   background: #4e5058;
 }
@@ -779,6 +781,15 @@ select:focus {
   grid-column: 1 / -1;
   color: #fff;
   background: #23a559;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.voice-status-debug {
+  grid-column: 1 / -1;
+  grid-auto-flow: column;
+  gap: 6px;
+  color: #b5bac1;
   font-size: 12px;
   font-weight: 900;
 }
@@ -2841,6 +2852,85 @@ select:focus {
 .confirm-modal input {
   width: calc(100% - 40px);
   margin: 0 20px;
+}
+
+.voice-diagnostics-modal {
+  width: min(900px, calc(100vw - 36px));
+  max-height: min(780px, calc(100vh - 36px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  border: 1px solid #1e1f22;
+  border-radius: 8px;
+  color: #dbdee1;
+  background: #313338;
+  box-shadow: 0 28px 96px rgba(0, 0, 0, 0.58);
+}
+
+.voice-diagnostics-modal header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid #232428;
+}
+
+.voice-diagnostics-modal h2,
+.voice-diagnostics-modal p {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.voice-diagnostics-modal p {
+  margin-top: 4px;
+  color: #b5bac1;
+  font-size: 13px;
+}
+
+.voice-diagnostics-modal header button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: #b5bac1;
+  background: transparent;
+  cursor: pointer;
+}
+
+.voice-diagnostics-modal header button:hover {
+  color: #fff;
+  background: #3f4147;
+}
+
+.voice-diagnostics-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+}
+
+.voice-diagnostics-actions span {
+  margin-left: auto;
+  color: #949ba4;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.voice-diagnostics-modal pre {
+  min-height: 0;
+  overflow: auto;
+  margin: 0 20px 20px;
+  border: 1px solid #1e1f22;
+  border-radius: 6px;
+  padding: 14px;
+  color: #dbdee1;
+  background: #1e1f22;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .secondary-button.danger {

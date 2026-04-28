@@ -105,7 +105,16 @@ export function attachRealtime(
       const voiceSocketState = unregisterVoiceSocket(socket.data.user.id, socket.id);
 
       if (voiceSocketState.wasRegistered && !voiceSocketState.hasRemainingSockets) {
+        logVoice("socket-disconnect-mark-reconnecting", {
+          userId: socket.data.user.id,
+          socketId: socket.id
+        });
         markVoiceParticipantReconnecting(socket.data.user.id);
+      } else if (voiceSocketState.wasRegistered) {
+        logVoice("socket-disconnect-kept-present", {
+          userId: socket.data.user.id,
+          socketId: socket.id
+        });
       }
     });
 
@@ -186,6 +195,14 @@ export function attachRealtime(
         voiceParticipants.set(socket.data.user.id, nextPresence);
         const state = buildVoiceState();
 
+        logVoice("join", {
+          userId: socket.data.user.id,
+          socketId: socket.id,
+          hadExisting: Boolean(existing),
+          wasReconnecting: Boolean(existing?.reconnecting),
+          shouldBroadcast
+        });
+
         if (shouldBroadcast) {
           io.emit("voice:state", state);
         }
@@ -204,7 +221,17 @@ export function attachRealtime(
         if (!voiceSocketState.hasRemainingSockets) {
           clearVoiceReconnectTimer(socket.data.user.id);
           voiceParticipants.delete(socket.data.user.id);
+          logVoice("leave-removed", {
+            userId: socket.data.user.id,
+            socketId: socket.id,
+            wasRegistered: voiceSocketState.wasRegistered
+          });
           io.emit("voice:state", buildVoiceState());
+        } else {
+          logVoice("leave-kept-present", {
+            userId: socket.data.user.id,
+            socketId: socket.id
+          });
         }
 
         ack?.({ ok: true });
@@ -216,31 +243,55 @@ export function attachRealtime(
     socket.on("voice:self-state", async (payload, ack) => {
       try {
         await assertSocketActive(socket.data.user.id);
+        const now = new Date().toISOString();
+        const moderation = voiceModeration.get(socket.data.user.id) ?? {
+          serverMuted: false,
+          serverDeafened: false
+        };
         const existing = voiceParticipants.get(socket.data.user.id);
-
-        if (!existing) {
-          throw new HttpError(409, "You are not connected to voice");
-        }
-
-        const selfDeafened = payload.selfDeafened ?? existing.selfDeafened;
-        const moderatedMuted = existing.serverMuted || existing.serverDeafened;
-        const next: VoicePresence = {
-          ...existing,
-          selfMuted: moderatedMuted || selfDeafened || (payload.selfMuted ?? existing.selfMuted),
-          selfDeafened,
-          screenSharing: payload.screenSharing ?? existing.screenSharing,
+        const basePresence: VoicePresence = existing ?? {
+          userId: socket.data.user.id,
+          selfMuted: moderation.serverMuted || moderation.serverDeafened,
+          selfDeafened: moderation.serverDeafened,
+          serverMuted: moderation.serverMuted,
+          serverDeafened: moderation.serverDeafened,
+          screenSharing: false,
           reconnecting: false,
-          updatedAt: new Date().toISOString()
+          joinedAt: now,
+          updatedAt: now
+        };
+
+        const selfDeafened = payload.selfDeafened ?? basePresence.selfDeafened;
+        const moderatedMuted = basePresence.serverMuted || basePresence.serverDeafened;
+        const next: VoicePresence = {
+          ...basePresence,
+          selfMuted: moderatedMuted || selfDeafened || (payload.selfMuted ?? basePresence.selfMuted),
+          selfDeafened,
+          screenSharing: payload.screenSharing ?? basePresence.screenSharing,
+          reconnecting: false,
+          updatedAt: now
         };
 
         const shouldBroadcast =
+          !existing ||
           existing.selfMuted !== next.selfMuted ||
           existing.selfDeafened !== next.selfDeafened ||
           existing.screenSharing !== next.screenSharing ||
           existing.reconnecting;
 
+        clearVoiceReconnectTimer(socket.data.user.id);
+        registerVoiceSocket(socket.data.user.id, socket.id);
         voiceParticipants.set(socket.data.user.id, next);
         const state = buildVoiceState();
+
+        logVoice("self-state", {
+          userId: socket.data.user.id,
+          socketId: socket.id,
+          hadExisting: Boolean(existing),
+          recreatedMissingPresence: !existing,
+          shouldBroadcast,
+          payload
+        });
 
         if (shouldBroadcast) {
           io.emit("voice:state", state);
@@ -360,6 +411,34 @@ export function attachRealtime(
 
   return io;
 
+  function logVoice(event: string, details: Record<string, unknown> = {}) {
+    try {
+      console.info(
+        `[voice] ${event}`,
+        JSON.stringify({
+          at: new Date().toISOString(),
+          ...details,
+          participantSocketCounts: Object.fromEntries(
+            Array.from(voiceParticipantSockets.entries()).map(([userId, sockets]) => [userId, sockets.size])
+          ),
+          participants: Array.from(voiceParticipants.values()).map((presence) => ({
+            userId: presence.userId,
+            selfMuted: presence.selfMuted,
+            selfDeafened: presence.selfDeafened,
+            serverMuted: presence.serverMuted,
+            serverDeafened: presence.serverDeafened,
+            screenSharing: presence.screenSharing,
+            reconnecting: presence.reconnecting,
+            joinedAt: presence.joinedAt,
+            updatedAt: presence.updatedAt
+          }))
+        })
+      );
+    } catch {
+      console.info(`[voice] ${event}`);
+    }
+  }
+
   function buildVoiceState(): VoiceStateView {
     return {
       channelName: voiceChannelName,
@@ -381,6 +460,7 @@ export function attachRealtime(
       reconnecting: true,
       updatedAt: new Date().toISOString()
     });
+    logVoice("mark-reconnecting", { userId });
     io.emit("voice:state", buildVoiceState());
 
     voiceReconnectTimers.set(
@@ -391,6 +471,7 @@ export function attachRealtime(
 
         if (current?.reconnecting) {
           voiceParticipants.delete(userId);
+          logVoice("remove-after-reconnect-grace", { userId });
           io.emit("voice:state", buildVoiceState());
         }
       }, voiceReconnectGraceMs)

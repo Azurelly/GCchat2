@@ -178,6 +178,13 @@ interface ScreenShareView {
   status: "starting" | "live" | "ended" | "unavailable";
 }
 
+interface VoiceDiagnosticEntry {
+  id: number;
+  at: string;
+  event: string;
+  details: string | null;
+}
+
 const api = new ApiClient();
 
 export function App() {
@@ -220,6 +227,8 @@ export function App() {
   const [selectedStreamUserId, setSelectedStreamUserId] = useState<string | null>(null);
   const [screenSourcePicker, setScreenSourcePicker] = useState<ScreenSourcePreview[] | null>(null);
   const screenSourceResolverRef = useRef<((source: ScreenSourcePreview | null) => void) | null>(null);
+  const [voiceDiagnosticsOpen, setVoiceDiagnosticsOpen] = useState(false);
+  const [voiceDiagnostics, setVoiceDiagnostics] = useState<VoiceDiagnosticEntry[]>([]);
   const [voiceVolumes, setVoiceVolumes] = useState(loadVoiceVolumes);
   const [locallyMutedVoiceUsers, setLocallyMutedVoiceUsers] = useState(loadLocalVoiceMutes);
   const voiceRoomRef = useRef<Room | null>(null);
@@ -233,6 +242,8 @@ export function App() {
   const voiceMutedRef = useRef(false);
   const voiceDeafenedRef = useRef(false);
   const voiceSharingRef = useRef(false);
+  const voiceDiagnosticsRef = useRef<VoiceDiagnosticEntry[]>([]);
+  const voiceDiagnosticCounterRef = useRef(0);
   const activeChannel = useMemo(() => {
     if (!session) {
       return null;
@@ -333,6 +344,25 @@ export function App() {
     voiceServerStateRef.current = voiceServerState;
   }, [voiceServerState]);
 
+  const appendVoiceDiagnostic = useCallback((event: string, details?: unknown) => {
+    const entry: VoiceDiagnosticEntry = {
+      id: voiceDiagnosticCounterRef.current + 1,
+      at: new Date().toISOString(),
+      event,
+      details: details === undefined ? null : stringifyDiagnosticDetails(details)
+    };
+
+    voiceDiagnosticCounterRef.current = entry.id;
+    voiceDiagnosticsRef.current = [...voiceDiagnosticsRef.current, entry].slice(-500);
+    setVoiceDiagnostics(voiceDiagnosticsRef.current);
+    console.info(`[voice] ${event}`, details ?? "");
+  }, []);
+
+  const clearVoiceDiagnostics = useCallback(() => {
+    voiceDiagnosticsRef.current = [];
+    setVoiceDiagnostics([]);
+  }, []);
+
   const clearVoiceAudio = useCallback(() => {
     for (const element of voiceAudioElementsRef.current) {
       element.remove();
@@ -377,30 +407,66 @@ export function App() {
     });
   }, []);
 
-  const announceVoicePresence = useCallback(async () => {
+  const announceVoicePresence = useCallback(async (reason = "presence") => {
     const room = voiceRoomRef.current;
 
     if (!room) {
+      appendVoiceDiagnostic("presence:skipped", {
+        reason,
+        reasonDetails: "No LiveKit room is currently attached."
+      });
       return null;
     }
 
-    const joinedState = await emitVoiceJoin();
-
-    if (!joinedState) {
-      return null;
-    }
-
-    const selfState = await emitVoiceSelfState({
-      selfMuted: voiceMutedRef.current,
-      selfDeafened: voiceDeafenedRef.current,
-      screenSharing:
-        voiceSharingRef.current ||
-        screenShareStartingRef.current ||
-        isParticipantScreenSharing(room.localParticipant)
+    appendVoiceDiagnostic("presence:start", {
+      reason,
+      socketConnected: Boolean(socketRef.current?.connected),
+      socketId: socketRef.current?.id ?? null,
+      room: describeVoiceRoom(room),
+      serverState: describeVoiceState(voiceServerStateRef.current, session?.user.id)
     });
 
-    return selfState ?? joinedState;
-  }, [emitVoiceJoin, emitVoiceSelfState]);
+    try {
+      const joinedState = await emitVoiceJoin();
+
+      if (!joinedState) {
+        appendVoiceDiagnostic("presence:join-skipped", {
+          reason,
+          socketConnected: Boolean(socketRef.current?.connected)
+        });
+        return null;
+      }
+
+      appendVoiceDiagnostic("presence:join-ack", {
+        reason,
+        state: describeVoiceState(joinedState, session?.user.id)
+      });
+
+      const selfState = await emitVoiceSelfState({
+        selfMuted: voiceMutedRef.current,
+        selfDeafened: voiceDeafenedRef.current,
+        screenSharing:
+          voiceSharingRef.current ||
+          screenShareStartingRef.current ||
+          isParticipantScreenSharing(room.localParticipant)
+      });
+
+      appendVoiceDiagnostic("presence:self-state-ack", {
+        reason,
+        state: describeVoiceState(selfState, session?.user.id)
+      });
+
+      return selfState ?? joinedState;
+    } catch (requestError) {
+      appendVoiceDiagnostic("presence:error", {
+        reason,
+        error: getMessage(requestError),
+        socketConnected: Boolean(socketRef.current?.connected),
+        room: describeVoiceRoom(room)
+      });
+      throw requestError;
+    }
+  }, [appendVoiceDiagnostic, emitVoiceJoin, emitVoiceSelfState, session?.user.id]);
 
   const emitVoiceModeration = useCallback((payload: VoiceModerationRequest) => {
     const currentSocket = socketRef.current;
@@ -591,6 +657,13 @@ export function App() {
   );
 
   const disconnectVoice = useCallback((notifyServer = true) => {
+    appendVoiceDiagnostic("leave:start", {
+      notifyServer,
+      socketConnected: Boolean(socketRef.current?.connected),
+      room: describeVoiceRoom(voiceRoomRef.current),
+      serverState: describeVoiceState(voiceServerStateRef.current, session?.user.id)
+    });
+
     if (notifyServer) {
       socketRef.current?.emit("voice:leave");
     }
@@ -607,10 +680,14 @@ export function App() {
     setVoiceSharing(false);
     setScreenShares([]);
     setSelectedStreamUserId(null);
-  }, [clearVoiceAudio]);
+  }, [appendVoiceDiagnostic, clearVoiceAudio, session?.user.id]);
 
   const handleVoiceJoin = async () => {
     if (voiceStatus === "connecting" || voiceRoomRef.current) {
+      appendVoiceDiagnostic("join:ignored", {
+        voiceStatus,
+        hasRoom: Boolean(voiceRoomRef.current)
+      });
       return;
     }
 
@@ -618,10 +695,19 @@ export function App() {
     let joinedVoicePresence = false;
     setVoiceStatus("connecting");
     setError(null);
+    appendVoiceDiagnostic("join:start", {
+      userId: session?.user.id ?? null,
+      socketConnected: Boolean(socketRef.current?.connected)
+    });
 
     try {
       const credentials = await api.createVoiceToken();
       room = new Room({ adaptiveStream: true, dynacast: true });
+      appendVoiceDiagnostic("join:token-created", {
+        roomName: credentials.roomName,
+        identity: credentials.identity,
+        url: credentials.url
+      });
 
       const attachAudio = (track: RemoteTrack, participant: RemoteParticipant) => {
         if (track.kind !== Track.Kind.Audio) {
@@ -640,6 +726,11 @@ export function App() {
         );
         document.body.appendChild(element);
         voiceAudioElementsRef.current.add(element);
+        appendVoiceDiagnostic("livekit:audio-attached", {
+          participantId: participant.identity,
+          trackSid: track.sid ?? null,
+          volume: element.volume
+        });
       };
 
       const detachAudio = (track: RemoteTrack) => {
@@ -647,6 +738,9 @@ export function App() {
           element.remove();
           voiceAudioElementsRef.current.delete(element);
         }
+        appendVoiceDiagnostic("livekit:audio-detached", {
+          trackSid: track.sid ?? null
+        });
       };
 
       const sync = () => {
@@ -673,28 +767,88 @@ export function App() {
         setVoiceSharing(localSharing);
         void emitVoiceSelfState({ screenSharing: localSharing })
           .then((state) => state && setVoiceServerState(state))
-          .catch(() => undefined);
+          .catch((requestError) =>
+            appendVoiceDiagnostic("screen-share:self-state-error", {
+              error: getMessage(requestError),
+              localSharing
+            })
+          );
       };
 
-      room.on(RoomEvent.ParticipantConnected, sync);
-      room.on(RoomEvent.ParticipantDisconnected, sync);
-      room.on(RoomEvent.ActiveSpeakersChanged, sync);
-      room.on(RoomEvent.TrackMuted, sync);
-      room.on(RoomEvent.TrackUnmuted, sync);
-      room.on(RoomEvent.TrackPublished, sync);
-      room.on(RoomEvent.TrackUnpublished, sync);
+      room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
+        appendVoiceDiagnostic("livekit:participant-connected", {
+          participant: describeLiveKitParticipant(participant),
+          room: describeVoiceRoom(room)
+        });
+        sync();
+      });
+      room.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
+        appendVoiceDiagnostic("livekit:participant-disconnected", {
+          participant: describeLiveKitParticipant(participant),
+          room: describeVoiceRoom(room)
+        });
+        sync();
+      });
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
+        appendVoiceDiagnostic("livekit:active-speakers", {
+          speakers: speakers.map((speaker) => speaker.identity)
+        });
+        sync();
+      });
+      room.on(RoomEvent.TrackMuted, (publication, participant) => {
+        appendVoiceDiagnostic("livekit:track-muted", {
+          participant: participant.identity,
+          source: publication.source,
+          kind: publication.kind
+        });
+        sync();
+      });
+      room.on(RoomEvent.TrackUnmuted, (publication, participant) => {
+        appendVoiceDiagnostic("livekit:track-unmuted", {
+          participant: participant.identity,
+          source: publication.source,
+          kind: publication.kind
+        });
+        sync();
+      });
+      room.on(RoomEvent.TrackPublished, (publication, participant) => {
+        appendVoiceDiagnostic("livekit:track-published", {
+          participant: participant.identity,
+          source: publication.source,
+          kind: publication.kind
+        });
+        sync();
+      });
+      room.on(RoomEvent.TrackUnpublished, (publication, participant) => {
+        appendVoiceDiagnostic("livekit:track-unpublished", {
+          participant: participant.identity,
+          source: publication.source,
+          kind: publication.kind
+        });
+        sync();
+      });
       room.on(RoomEvent.LocalTrackPublished, syncLocalScreenSharePresence);
       room.on(RoomEvent.LocalTrackUnpublished, syncLocalScreenSharePresence);
-      room.on(RoomEvent.Reconnecting, () => setVoiceStatus("reconnecting"));
+      room.on(RoomEvent.Reconnecting, () => {
+        appendVoiceDiagnostic("livekit:reconnecting", describeVoiceRoom(room));
+        setVoiceStatus("reconnecting");
+      });
       room.on(RoomEvent.Reconnected, () => {
+        appendVoiceDiagnostic("livekit:reconnected", describeVoiceRoom(room));
         setVoiceStatus("connected");
-        void announceVoicePresence().then((state) => state && setVoiceServerState(state)).catch((requestError) => {
+        void announceVoicePresence("livekit-reconnected").then((state) => state && setVoiceServerState(state)).catch((requestError) => {
           setError(getMessage(requestError));
         });
       });
       room.on(
         RoomEvent.TrackSubscribed,
         (track: RemoteTrack, _publication: RemoteTrackPublication, _participant: RemoteParticipant) => {
+          appendVoiceDiagnostic("livekit:track-subscribed", {
+            participant: _participant.identity,
+            source: _publication.source,
+            kind: track.kind,
+            trackSid: track.sid ?? null
+          });
           attachAudio(track, _participant);
           sync();
         }
@@ -702,11 +856,18 @@ export function App() {
       room.on(
         RoomEvent.TrackUnsubscribed,
         (track: RemoteTrack, _publication: RemoteTrackPublication, _participant: RemoteParticipant) => {
+          appendVoiceDiagnostic("livekit:track-unsubscribed", {
+            participant: _participant.identity,
+            source: _publication.source,
+            kind: track.kind,
+            trackSid: track.sid ?? null
+          });
           detachAudio(track);
           sync();
         }
       );
       room.on(RoomEvent.Disconnected, () => {
+        appendVoiceDiagnostic("livekit:disconnected", describeVoiceRoom(room));
         clearVoiceAudio();
         voiceRoomRef.current = null;
         setVoiceStatus("disconnected");
@@ -724,7 +885,8 @@ export function App() {
       setVoiceStatus("connected");
       setVoiceMuted(false);
       setVoiceDeafened(false);
-      const voiceState = await announceVoicePresence();
+      appendVoiceDiagnostic("join:livekit-connected", describeVoiceRoom(room));
+      const voiceState = await announceVoicePresence("join");
       joinedVoicePresence = Boolean(voiceState);
       if (voiceState) {
         setVoiceServerState(voiceState);
@@ -739,6 +901,11 @@ export function App() {
       room?.disconnect();
       clearVoiceAudio();
       setVoiceStatus("failed");
+      appendVoiceDiagnostic("join:error", {
+        error: getMessage(requestError),
+        joinedVoicePresence,
+        socketConnected: Boolean(socketRef.current?.connected)
+      });
       setError(getMessage(requestError));
     }
   };
@@ -760,9 +927,17 @@ export function App() {
       const nextMuted = !voiceMuted;
       await room.localParticipant.setMicrophoneEnabled(!nextMuted);
       setVoiceMuted(nextMuted);
-      await emitVoiceSelfState({ selfMuted: nextMuted });
+      appendVoiceDiagnostic("mute:toggled", {
+        nextMuted,
+        room: describeVoiceRoom(room)
+      });
+      const state = await emitVoiceSelfState({ selfMuted: nextMuted });
+      if (state) {
+        setVoiceServerState(state);
+      }
       syncVoiceParticipants(room);
     } catch (requestError) {
+      appendVoiceDiagnostic("mute:error", { error: getMessage(requestError) });
       setError(getMessage(requestError));
     }
   };
@@ -781,10 +956,19 @@ export function App() {
       await room.localParticipant.setMicrophoneEnabled(!forcedMuted);
       setVoiceDeafened(nextDeafened);
       setVoiceMuted(forcedMuted);
-      await emitVoiceSelfState({ selfDeafened: nextDeafened, selfMuted: forcedMuted });
+      appendVoiceDiagnostic("deafen:toggled", {
+        nextDeafened,
+        forcedMuted,
+        room: describeVoiceRoom(room)
+      });
+      const state = await emitVoiceSelfState({ selfDeafened: nextDeafened, selfMuted: forcedMuted });
+      if (state) {
+        setVoiceServerState(state);
+      }
       applyVoiceAudioPreferences(room);
       syncVoiceParticipants(room);
     } catch (requestError) {
+      appendVoiceDiagnostic("deafen:error", { error: getMessage(requestError) });
       setError(getMessage(requestError));
     }
   };
@@ -804,7 +988,11 @@ export function App() {
         voiceSharingRef.current = false;
         setVoiceSharing(false);
         setSelectedStreamUserId((current) => (current === session.user.id ? null : current));
-        await emitVoiceSelfState({ screenSharing: false });
+        appendVoiceDiagnostic("screen-share:stop", describeVoiceRoom(room));
+        const state = await emitVoiceSelfState({ screenSharing: false });
+        if (state) {
+          setVoiceServerState(state);
+        }
         syncScreenShares(room);
         return;
       }
@@ -812,9 +1000,14 @@ export function App() {
       const source = await requestScreenSource();
 
       if (!source) {
+        appendVoiceDiagnostic("screen-share:cancelled");
         return;
       }
 
+      appendVoiceDiagnostic("screen-share:start", {
+        sourceId: source.id,
+        sourceName: source.name
+      });
       await window.gcchat.screens.selectSource(source.id);
       screenShareStartingRef.current = true;
       voiceSharingRef.current = true;
@@ -823,7 +1016,10 @@ export function App() {
       screenShareStartingRef.current = false;
       voiceSharingRef.current = true;
       setVoiceSharing(true);
-      await emitVoiceSelfState({ screenSharing: true });
+      const state = await emitVoiceSelfState({ screenSharing: true });
+      if (state) {
+        setVoiceServerState(state);
+      }
       setSelectedStreamUserId(session.user.id);
       syncScreenShares(room);
     } catch (requestError) {
@@ -831,6 +1027,7 @@ export function App() {
       voiceSharingRef.current = false;
       setVoiceSharing(false);
       void emitVoiceSelfState({ screenSharing: false });
+      appendVoiceDiagnostic("screen-share:error", { error: getMessage(requestError) });
       setError(getMessage(requestError));
     }
   };
@@ -845,7 +1042,7 @@ export function App() {
   };
 
   const repairMissingVoicePresence = useCallback(
-    (state = voiceServerStateRef.current) => {
+    (state = voiceServerStateRef.current, reason = "repair") => {
       if (!session || !voiceRoomRef.current || !socketRef.current?.connected) {
         return;
       }
@@ -856,15 +1053,27 @@ export function App() {
         return;
       }
 
-      void announceVoicePresence()
+      appendVoiceDiagnostic("presence:repair", {
+        reason,
+        selfState: selfState ?? null,
+        serverState: describeVoiceState(state, session.user.id),
+        room: describeVoiceRoom(voiceRoomRef.current)
+      });
+
+      void announceVoicePresence(reason)
         .then((nextState) => {
           if (nextState) {
             setVoiceServerState(nextState);
           }
         })
-        .catch(() => undefined);
+        .catch((requestError) =>
+          appendVoiceDiagnostic("presence:repair-error", {
+            reason,
+            error: getMessage(requestError)
+          })
+        );
     },
-    [announceVoicePresence, session?.user.id]
+    [announceVoicePresence, appendVoiceDiagnostic, session?.user.id]
   );
 
   useEffect(() => {
@@ -876,20 +1085,48 @@ export function App() {
       return;
     }
 
-    const timer = window.setInterval(() => repairMissingVoicePresence(), 3000);
+    const repairTimer = window.setInterval(() => repairMissingVoicePresence(undefined, "repair-interval"), 3000);
+    const heartbeatTimer = window.setInterval(() => {
+      if (!voiceRoomRef.current) {
+        return;
+      }
 
-    return () => window.clearInterval(timer);
-  }, [repairMissingVoicePresence, session?.user.id]);
+      if (!socketRef.current?.connected) {
+        appendVoiceDiagnostic("presence:heartbeat-skipped", {
+          reason: "Socket is not connected.",
+          room: describeVoiceRoom(voiceRoomRef.current)
+        });
+        return;
+      }
+
+      void announceVoicePresence("heartbeat")
+        .then((state) => {
+          if (state) {
+            setVoiceServerState(state);
+          }
+        })
+        .catch((requestError) =>
+          appendVoiceDiagnostic("presence:heartbeat-error", {
+            error: getMessage(requestError)
+          })
+        );
+    }, 10000);
+
+    return () => {
+      window.clearInterval(repairTimer);
+      window.clearInterval(heartbeatTimer);
+    };
+  }, [announceVoicePresence, appendVoiceDiagnostic, repairMissingVoicePresence, session?.user.id]);
 
   useEffect(() => {
     if (!session) {
       return;
     }
 
-    const repairOnFocus = () => repairMissingVoicePresence();
+    const repairOnFocus = () => repairMissingVoicePresence(undefined, "window-focus");
     const repairOnVisibility = () => {
       if (document.visibilityState === "visible") {
-        repairMissingVoicePresence();
+        repairMissingVoicePresence(undefined, "visibility-visible");
       }
     };
 
@@ -1032,15 +1269,33 @@ export function App() {
     });
 
     socket.on("connect", () => {
+      appendVoiceDiagnostic("socket:connect", {
+        socketId: socket.id,
+        transport: socket.io.engine.transport.name,
+        hasVoiceRoom: Boolean(voiceRoomRef.current)
+      });
+
       for (const channel of session.channels) {
         socket.emit("channel:join", { channelId: channel.id });
       }
 
       if (voiceRoomRef.current) {
-        void announceVoicePresence()
+        void announceVoicePresence("socket-connect")
           .then((state) => state && setVoiceServerState(state))
-          .catch(() => undefined);
+          .catch((requestError) =>
+            appendVoiceDiagnostic("socket:connect-presence-error", {
+              error: getMessage(requestError)
+            })
+          );
       }
+    });
+
+    socket.on("disconnect", (reason) => {
+      appendVoiceDiagnostic("socket:disconnect", {
+        reason,
+        hadVoiceRoom: Boolean(voiceRoomRef.current),
+        serverState: describeVoiceState(voiceServerStateRef.current, session.user.id)
+      });
     });
 
     socket.on("message:new", (message) => {
@@ -1108,14 +1363,20 @@ export function App() {
     socket.on("emojis:updated", setCustomEmojis);
 
     socket.on("voice:state", (state) => {
+      appendVoiceDiagnostic("socket:voice-state", {
+        state: describeVoiceState(state, session.user.id),
+        room: describeVoiceRoom(voiceRoomRef.current)
+      });
       setVoiceServerState(state);
-      window.setTimeout(() => repairMissingVoicePresence(state), 250);
+      window.setTimeout(() => repairMissingVoicePresence(state, "server-state"), 250);
     });
 
     socket.on("voice:moderated", (state) => {
       if (state.userId !== session.user.id) {
         return;
       }
+
+      appendVoiceDiagnostic("socket:voice-moderated", state);
 
       if (state.serverMuted || state.serverDeafened) {
         void voiceRoomRef.current?.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
@@ -1128,11 +1389,17 @@ export function App() {
     });
 
     socket.on("voice:force-disconnect", () => {
+      appendVoiceDiagnostic("socket:voice-force-disconnect");
       disconnectVoice(false);
       setError("You were disconnected from voice by an admin.");
     });
 
-    socket.on("connect_error", (socketError) => setError(socketError.message));
+    socket.on("connect_error", (socketError) => {
+      appendVoiceDiagnostic("socket:connect-error", {
+        message: socketError.message
+      });
+      setError(socketError.message);
+    });
     socketRef.current = socket;
     setSocket(socket);
 
@@ -1427,16 +1694,21 @@ export function App() {
           onScreenShareToggle={() => void handleScreenShareToggle()}
           onWatchStream={setSelectedStreamUserId}
           onVoiceProfile={setSelectedProfile}
-          onSetVoiceVolume={(userId, volume) =>
-            setVoiceVolumes((current) => ({ ...current, [userId]: normalizeVoiceVolume(volume) }))
-          }
-          onToggleLocalVoiceMute={(userId) =>
+          voiceDiagnosticsCount={voiceDiagnostics.length}
+          onOpenVoiceDiagnostics={() => setVoiceDiagnosticsOpen(true)}
+          onSetVoiceVolume={(userId, volume) => {
+            const normalized = normalizeVoiceVolume(volume);
+            appendVoiceDiagnostic("volume:set", { userId, volume: normalized });
+            setVoiceVolumes((current) => ({ ...current, [userId]: normalized }));
+          }}
+          onToggleLocalVoiceMute={(userId) => {
+            appendVoiceDiagnostic("volume:toggle-local-mute", { userId });
             setLocallyMutedVoiceUsers((current) =>
               current.includes(userId)
                 ? current.filter((existing) => existing !== userId)
                 : [...current, userId]
-            )
-          }
+            );
+          }}
           onVoiceModeration={(payload) => void handleVoiceModeration(payload)}
         />
       ) : null}
@@ -1559,6 +1831,13 @@ export function App() {
           onNotificationPrefsChange={setNotificationPrefs}
           onAppearancePrefsChange={setAppearancePrefs}
           onError={setError}
+        />
+      ) : null}
+      {voiceDiagnosticsOpen ? (
+        <VoiceDiagnosticsModal
+          entries={voiceDiagnostics}
+          onClose={() => setVoiceDiagnosticsOpen(false)}
+          onClear={clearVoiceDiagnostics}
         />
       ) : null}
       <ToastStack toasts={toasts} onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))} />
@@ -1801,6 +2080,8 @@ function ChannelSidebar({
   onScreenShareToggle,
   onWatchStream,
   onVoiceProfile,
+  voiceDiagnosticsCount,
+  onOpenVoiceDiagnostics,
   onSetVoiceVolume,
   onToggleLocalVoiceMute,
   onVoiceModeration
@@ -1827,6 +2108,8 @@ function ChannelSidebar({
   onScreenShareToggle: () => void;
   onWatchStream: (userId: string) => void;
   onVoiceProfile: (profile: UserProfile) => void;
+  voiceDiagnosticsCount: number;
+  onOpenVoiceDiagnostics: () => void;
   onSetVoiceVolume: (userId: string, volume: number) => void;
   onToggleLocalVoiceMute: (userId: string) => void;
   onVoiceModeration: (payload: VoiceModerationRequest) => void;
@@ -1953,6 +2236,8 @@ function ChannelSidebar({
           onToggleMute={onVoiceMuteToggle}
           onToggleDeafen={onVoiceDeafenToggle}
           onToggleScreenShare={onScreenShareToggle}
+          diagnosticsCount={voiceDiagnosticsCount}
+          onOpenDiagnostics={onOpenVoiceDiagnostics}
         />
       <div className="user-panel">
         <button className="user-identity" onClick={onProfile}>
@@ -2269,7 +2554,9 @@ function VoiceStatusBar({
   onLeave,
   onToggleMute,
   onToggleDeafen,
-  onToggleScreenShare
+  onToggleScreenShare,
+  diagnosticsCount,
+  onOpenDiagnostics
 }: {
   status: VoiceStatus;
   muted: boolean;
@@ -2281,6 +2568,8 @@ function VoiceStatusBar({
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onToggleScreenShare: () => void;
+  diagnosticsCount: number;
+  onOpenDiagnostics: () => void;
 }) {
   const connected = status === "connected" || status === "reconnecting";
   const active = participants.length > 0;
@@ -2328,14 +2617,78 @@ function VoiceStatusBar({
             <button type="button" className="voice-status-button danger" onClick={onLeave} title="Disconnect">
               <PhoneOff size={15} />
             </button>
+            <button
+              type="button"
+              className="voice-status-button"
+              onClick={onOpenDiagnostics}
+              title={`Voice diagnostics (${diagnosticsCount})`}
+            >
+              <ClipboardList size={15} />
+            </button>
           </>
         ) : (
-          <button type="button" className="voice-status-join" onClick={onJoin}>
-            Join Voice
-          </button>
+          <>
+            <button type="button" className="voice-status-join" onClick={onJoin}>
+              Join Voice
+            </button>
+            <button type="button" className="voice-status-debug" onClick={onOpenDiagnostics}>
+              <ClipboardList size={14} />
+              Logs
+            </button>
+          </>
         )}
       </div>
     </section>
+  );
+}
+
+function VoiceDiagnosticsModal({
+  entries,
+  onClose,
+  onClear
+}: {
+  entries: VoiceDiagnosticEntry[];
+  onClose: () => void;
+  onClear: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const text = useMemo(() => formatVoiceDiagnostics(entries), [entries]);
+
+  const copyLogs = async () => {
+    try {
+      await navigator.clipboard.writeText(text || "No voice diagnostics captured yet.");
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <section className="voice-diagnostics-modal">
+        <header>
+          <div>
+            <h2>Voice Diagnostics</h2>
+            <p>Copy this log when voice presence, audio, or screen sharing acts weird.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close voice diagnostics">
+            <X size={18} />
+          </button>
+        </header>
+        <div className="voice-diagnostics-actions">
+          <button className="primary-button" type="button" onClick={copyLogs}>
+            <ClipboardList size={16} />
+            {copied ? "Copied" : "Copy logs"}
+          </button>
+          <button className="secondary-button" type="button" onClick={onClear}>
+            Clear
+          </button>
+          <span>{entries.length} entries</span>
+        </div>
+        <pre>{text || "No voice diagnostics captured yet. Join voice and try the broken action again."}</pre>
+      </section>
+    </div>
   );
 }
 
@@ -5228,6 +5581,68 @@ function isParticipantScreenSharing(participant: Participant) {
   return getParticipantScreenShareStatus(participant) !== null;
 }
 
+function describeVoiceRoom(room: Room | null) {
+  if (!room) {
+    return null;
+  }
+
+  return {
+    state: String((room as { state?: unknown }).state ?? "unknown"),
+    localIdentity: room.localParticipant.identity,
+    localAudioMuted: isParticipantAudioMuted(room.localParticipant),
+    localScreenSharing: isParticipantScreenSharing(room.localParticipant),
+    remoteParticipants: Array.from(room.remoteParticipants.values()).map(describeLiveKitParticipant)
+  };
+}
+
+function describeLiveKitParticipant(participant: Participant) {
+  return {
+    identity: participant.identity,
+    name: participant.name ?? null,
+    audioMuted: isParticipantAudioMuted(participant),
+    screenSharing: isParticipantScreenSharing(participant),
+    speaking: participant.isSpeaking,
+    audioPublications: Array.from(participant.audioTrackPublications.values()).map((publication) => ({
+      source: publication.source,
+      muted: publication.isMuted,
+      subscribed: "isSubscribed" in publication ? publication.isSubscribed : undefined
+    })),
+    videoPublications: Array.from(participant.videoTrackPublications.values()).map((publication) => ({
+      source: publication.source,
+      muted: publication.isMuted,
+      subscribed: "isSubscribed" in publication ? publication.isSubscribed : undefined,
+      hasTrack: Boolean(publication.track)
+    }))
+  };
+}
+
+function describeVoiceState(state: VoiceStateView | null, selfId?: string) {
+  if (!state) {
+    return null;
+  }
+
+  const now = Date.now();
+
+  return {
+    channelName: state.channelName,
+    count: state.participants.length,
+    selfPresent: selfId ? state.participants.some((participant) => participant.userId === selfId) : undefined,
+    participants: state.participants.map((participant) => ({
+      userId: participant.userId,
+      self: selfId ? participant.userId === selfId : undefined,
+      muted: participant.selfMuted,
+      deafened: participant.selfDeafened,
+      serverMuted: participant.serverMuted,
+      serverDeafened: participant.serverDeafened,
+      screenSharing: participant.screenSharing,
+      reconnecting: participant.reconnecting,
+      joinedAt: participant.joinedAt,
+      updatedAt: participant.updatedAt,
+      updatedAgeMs: Math.max(0, now - Date.parse(participant.updatedAt))
+    }))
+  };
+}
+
 function getLiveKitParticipant(room: Room, userId: string): Participant | null {
   if (room.localParticipant.identity === userId) {
     return room.localParticipant;
@@ -5552,6 +5967,41 @@ function formatShortEventDate(value: string) {
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+function stringifyDiagnosticDetails(details: unknown) {
+  try {
+    return JSON.stringify(
+      details,
+      (_key, value) => {
+        if (value instanceof Error) {
+          return {
+            name: value.name,
+            message: value.message,
+            stack: value.stack
+          };
+        }
+
+        if (typeof value === "bigint") {
+          return value.toString();
+        }
+
+        return value;
+      },
+      2
+    );
+  } catch {
+    return String(details);
+  }
+}
+
+function formatVoiceDiagnostics(entries: VoiceDiagnosticEntry[]) {
+  return entries
+    .map((entry) => {
+      const details = entry.details ? `\n${entry.details}` : "";
+      return `[${entry.at}] ${entry.event}${details}`;
+    })
+    .join("\n\n");
 }
 
 function getMessage(error: unknown) {
