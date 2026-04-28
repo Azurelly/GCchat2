@@ -107,6 +107,7 @@ type ActiveFeature = "chat" | "calendar" | "emojis";
 type ThemeName = "dark" | "light" | "midnight" | "forest" | "berry";
 type NotificationSound = "ping" | "chime" | "alert" | "none";
 type DefaultEmoji = (typeof defaultEmojis)[number];
+type CalendarEventsStatus = "idle" | "loading" | "ready" | "error";
 
 interface NotificationPreferences {
   mentionToasts: boolean;
@@ -132,6 +133,7 @@ export function App() {
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [messagesByChannel, setMessagesByChannel] = useState<Record<string, MessageView[]>>({});
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
+  const [calendarEventsStatus, setCalendarEventsStatus] = useState<CalendarEventsStatus>("idle");
   const [customEmojis, setCustomEmojis] = useState<CustomEmojiView[]>([]);
   const [calendarFocusEventId, setCalendarFocusEventId] = useState<string | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<MessageView | null>(null);
@@ -219,6 +221,7 @@ export function App() {
     setSession(null);
     setMessagesByChannel({});
     setCalendarEvents([]);
+    setCalendarEventsStatus("idle");
     setCustomEmojis([]);
     setSelectedProfile(null);
     setSettingsOpen(false);
@@ -231,21 +234,56 @@ export function App() {
       setSocket(null);
       setMessagesByChannel({});
       setCalendarEvents([]);
+      setCalendarEventsStatus("idle");
       setCustomEmojis([]);
       return;
     }
 
     api.setToken(session.token);
     let active = true;
+    let calendarRetryTimer: number | null = null;
+    let calendarLoadedOnce = false;
 
-    api
-      .getCalendarEvents()
-      .then((events) => {
-        if (active) {
+    const loadCalendarEvents = (attempt = 0) => {
+      if (!active) {
+        return;
+      }
+
+      if (calendarRetryTimer !== null) {
+        window.clearTimeout(calendarRetryTimer);
+        calendarRetryTimer = null;
+      }
+
+      if (!calendarLoadedOnce) {
+        setCalendarEventsStatus("loading");
+      }
+
+      void api
+        .getCalendarEvents()
+        .then((events) => {
+          if (!active) {
+            return;
+          }
+
+          calendarLoadedOnce = true;
           setCalendarEvents(events);
-        }
-      })
-      .catch((requestError) => setError(getMessage(requestError)));
+          setCalendarEventsStatus("ready");
+        })
+        .catch(() => {
+          if (!active) {
+            return;
+          }
+
+          if (!calendarLoadedOnce) {
+            setCalendarEventsStatus("error");
+          }
+
+          const retryDelay = Math.min(1000 * 2 ** attempt, 10000);
+          calendarRetryTimer = window.setTimeout(() => loadCalendarEvents(attempt + 1), retryDelay);
+        });
+    };
+
+    loadCalendarEvents();
 
     api
       .getCustomEmojis()
@@ -315,13 +353,7 @@ export function App() {
 
     socket.on("session:banned", enterBannedState);
 
-    socket.on("calendar:event:upsert", () => {
-      void api.getCalendarEvents().then((events) => {
-        if (active) {
-          setCalendarEvents(events);
-        }
-      });
-    });
+    socket.on("calendar:event:upsert", () => loadCalendarEvents());
 
     socket.on("emojis:updated", setCustomEmojis);
 
@@ -331,6 +363,9 @@ export function App() {
 
     return () => {
       active = false;
+      if (calendarRetryTimer !== null) {
+        window.clearTimeout(calendarRetryTimer);
+      }
       socket.disconnect();
       setSocket(null);
     };
@@ -583,6 +618,7 @@ export function App() {
             messages={messages}
             members={session.members}
             calendarEvents={calendarEvents}
+            calendarEventsStatus={calendarEventsStatus}
             customEmojis={customEmojis}
             currentUser={session.user}
             onProfile={setSelectedProfile}
@@ -610,6 +646,7 @@ export function App() {
       ) : activeFeature === "calendar" ? (
         <CalendarView
           events={calendarEvents}
+          eventsStatus={calendarEventsStatus}
           focusEventId={calendarFocusEventId}
           onFocusHandled={() => setCalendarFocusEventId(null)}
           onCreated={handleCalendarEventCreated}
@@ -991,6 +1028,7 @@ function MessageList({
   messages,
   members,
   calendarEvents,
+  calendarEventsStatus,
   customEmojis,
   currentUser,
   onProfile,
@@ -1003,6 +1041,7 @@ function MessageList({
   messages: MessageView[];
   members: ServerMemberView[];
   calendarEvents: CalendarEventView[];
+  calendarEventsStatus: CalendarEventsStatus;
   customEmojis: CustomEmojiView[];
   currentUser: UserProfile;
   onProfile: (profile: UserProfile) => void;
@@ -1105,7 +1144,9 @@ function MessageList({
                   onOpenCalendarEvent={onOpenCalendarEvent}
                   onError={onError}
                 />
-              ) : null;
+              ) : (
+                <MessageEventPlaceholder key={eventId} status={calendarEventsStatus} />
+              );
             })}
             {message.attachments.length > 0 ? (
               <div className="attachments">
@@ -1306,6 +1347,25 @@ function MessageEventEmbed({
           Open
         </button>
       </div>
+    </article>
+  );
+}
+
+function MessageEventPlaceholder({ status }: { status: CalendarEventsStatus }) {
+  const loading = status === "idle" || status === "loading";
+
+  return (
+    <article className="message-event-embed unresolved">
+      <div className="event-time">
+        {loading ? <Loader2 className="spin" size={16} /> : <CalendarDays size={16} />}
+        <time>{loading ? "Loading event details..." : "Event details unavailable"}</time>
+      </div>
+      <h3>{loading ? "Loading linked event" : "Linked event not loaded"}</h3>
+      <p>
+        {loading
+          ? "The message is here. GCChat is still syncing the calendar."
+          : "GCChat could not load this calendar event yet. It may come back after the next sync."}
+      </p>
     </article>
   );
 }
@@ -1947,6 +2007,7 @@ function EmojiEditModal({
 
 function CalendarView({
   events,
+  eventsStatus,
   focusEventId,
   onFocusHandled,
   onCreated,
@@ -1957,6 +2018,7 @@ function CalendarView({
   onDismissError
 }: {
   events: CalendarEventView[];
+  eventsStatus: CalendarEventsStatus;
   focusEventId: string | null;
   onFocusHandled: () => void;
   onCreated: (event: CalendarEventView) => void;
@@ -2072,6 +2134,18 @@ function CalendarView({
           <button onClick={onDismissError} aria-label="Dismiss">
             <X size={16} />
           </button>
+        </div>
+      ) : null}
+
+      {eventsStatus === "loading" ? (
+        <div className="calendar-sync-banner">
+          <Loader2 className="spin" size={16} />
+          <span>Syncing calendar events...</span>
+        </div>
+      ) : eventsStatus === "error" ? (
+        <div className="calendar-sync-banner warning">
+          <CalendarDays size={16} />
+          <span>Calendar events are still reconnecting.</span>
         </div>
       ) : null}
 

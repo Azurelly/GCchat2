@@ -975,10 +975,21 @@ select:focus {
   background: #2b2d31;
 }
 
+.message-event-embed.unresolved {
+  border-left-color: #949ba4;
+  color: #b5bac1;
+}
+
 .message-event-embed h3 {
   margin: 0;
   font-size: 16px;
   letter-spacing: 0;
+}
+
+.message-event-embed p {
+  margin: 0;
+  color: #b5bac1;
+  line-height: 1.35;
 }
 
 .message-event-actions {
@@ -1515,13 +1526,32 @@ select:focus {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: 48px minmax(0, 1fr);
+  grid-template-rows: 48px auto minmax(0, 1fr);
   overflow: hidden;
   background: #313338;
 }
 
-.calendar-content {
+.calendar-sync-banner {
   grid-row: 2;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid #24262b;
+  border-bottom: 1px solid #24262b;
+  padding: 0 18px;
+  color: #b5bac1;
+  background: #2b2d31;
+  font-weight: 700;
+}
+
+.calendar-sync-banner.warning {
+  color: #f0b232;
+  background: #332b1c;
+}
+
+.calendar-content {
+  grid-row: 3;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(300px, 420px);
