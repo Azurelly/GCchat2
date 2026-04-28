@@ -37,7 +37,7 @@ interface VoiceModerationState {
 }
 
 const voiceChannelName = "General Voice";
-const voiceReconnectGraceMs = 12000;
+const voiceReconnectGraceMs = 45000;
 
 export function attachRealtime(
   httpServer: HttpServer,
@@ -161,9 +161,7 @@ export function attachRealtime(
         };
         const existing = voiceParticipants.get(socket.data.user.id);
 
-        clearVoiceReconnectTimer(socket.data.user.id);
-        registerVoiceSocket(socket.data.user.id, socket.id);
-        voiceParticipants.set(socket.data.user.id, {
+        const nextPresence: VoicePresence = {
           userId: socket.data.user.id,
           selfMuted: existing?.selfMuted ?? (moderation.serverMuted || moderation.serverDeafened),
           selfDeafened: existing?.selfDeafened ?? moderation.serverDeafened,
@@ -173,10 +171,25 @@ export function attachRealtime(
           reconnecting: false,
           joinedAt: existing?.joinedAt ?? now,
           updatedAt: now
-        });
+        };
+        const shouldBroadcast =
+          !existing ||
+          existing.reconnecting ||
+          existing.selfMuted !== nextPresence.selfMuted ||
+          existing.selfDeafened !== nextPresence.selfDeafened ||
+          existing.serverMuted !== nextPresence.serverMuted ||
+          existing.serverDeafened !== nextPresence.serverDeafened ||
+          existing.screenSharing !== nextPresence.screenSharing;
 
+        clearVoiceReconnectTimer(socket.data.user.id);
+        registerVoiceSocket(socket.data.user.id, socket.id);
+        voiceParticipants.set(socket.data.user.id, nextPresence);
         const state = buildVoiceState();
-        io.emit("voice:state", state);
+
+        if (shouldBroadcast) {
+          io.emit("voice:state", state);
+        }
+
         ack?.({ ok: true, state });
       } catch (error) {
         ack?.({ ok: false, error: getErrorMessage(error) });
@@ -220,9 +233,19 @@ export function attachRealtime(
           updatedAt: new Date().toISOString()
         };
 
+        const shouldBroadcast =
+          existing.selfMuted !== next.selfMuted ||
+          existing.selfDeafened !== next.selfDeafened ||
+          existing.screenSharing !== next.screenSharing ||
+          existing.reconnecting;
+
         voiceParticipants.set(socket.data.user.id, next);
         const state = buildVoiceState();
-        io.emit("voice:state", state);
+
+        if (shouldBroadcast) {
+          io.emit("voice:state", state);
+        }
+
         ack?.({ ok: true, state });
       } catch (error) {
         ack?.({ ok: false, error: getErrorMessage(error) });

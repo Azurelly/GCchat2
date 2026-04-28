@@ -225,6 +225,10 @@ export function App() {
   const voiceRoomRef = useRef<Room | null>(null);
   const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
   const voiceJoinedAtRef = useRef<string | null>(null);
+  const voiceServerStateRef = useRef<VoiceStateView>({
+    channelName: "General Voice",
+    participants: []
+  });
   const voiceMutedRef = useRef(false);
   const voiceDeafenedRef = useRef(false);
   const voiceSharingRef = useRef(false);
@@ -323,6 +327,10 @@ export function App() {
   useEffect(() => {
     voiceSharingRef.current = voiceSharing;
   }, [voiceSharing]);
+
+  useEffect(() => {
+    voiceServerStateRef.current = voiceServerState;
+  }, [voiceServerState]);
 
   const clearVoiceAudio = useCallback(() => {
     for (const element of voiceAudioElementsRef.current) {
@@ -512,7 +520,7 @@ export function App() {
       ) {
         const now = new Date().toISOString();
 
-        participantStates.unshift({
+        participantStates.push({
           userId: session.user.id,
           selfMuted: voiceMuted,
           selfDeafened: voiceDeafened,
@@ -524,6 +532,8 @@ export function App() {
           updatedAt: now
         });
       }
+
+      participantStates.sort((a, b) => Date.parse(a.joinedAt) - Date.parse(b.joinedAt));
 
       setVoiceParticipants(
         participantStates.map((participantState) => {
@@ -791,6 +801,29 @@ export function App() {
     }, setError);
   };
 
+  const repairMissingVoicePresence = useCallback(
+    (state = voiceServerStateRef.current) => {
+      if (!session || !voiceRoomRef.current || !socketRef.current?.connected) {
+        return;
+      }
+
+      const selfState = state.participants.find((participant) => participant.userId === session.user.id);
+
+      if (selfState && !selfState.reconnecting) {
+        return;
+      }
+
+      void announceVoicePresence()
+        .then((nextState) => {
+          if (nextState) {
+            setVoiceServerState(nextState);
+          }
+        })
+        .catch(() => undefined);
+    },
+    [announceVoicePresence, session?.user.id]
+  );
+
   useEffect(() => {
     return () => disconnectVoice();
   }, [disconnectVoice]);
@@ -800,24 +833,31 @@ export function App() {
       return;
     }
 
-    const syncPresence = () => {
-      if (!voiceRoomRef.current || !socketRef.current?.connected) {
-        return;
-      }
-
-      void announceVoicePresence()
-        .then((state) => {
-          if (state) {
-            setVoiceServerState(state);
-          }
-        })
-        .catch(() => undefined);
-    };
-
-    const timer = window.setInterval(syncPresence, 5000);
+    const timer = window.setInterval(() => repairMissingVoicePresence(), 3000);
 
     return () => window.clearInterval(timer);
-  }, [announceVoicePresence, session?.user.id]);
+  }, [repairMissingVoicePresence, session?.user.id]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const repairOnFocus = () => repairMissingVoicePresence();
+    const repairOnVisibility = () => {
+      if (document.visibilityState === "visible") {
+        repairMissingVoicePresence();
+      }
+    };
+
+    window.addEventListener("focus", repairOnFocus);
+    document.addEventListener("visibilitychange", repairOnVisibility);
+
+    return () => {
+      window.removeEventListener("focus", repairOnFocus);
+      document.removeEventListener("visibilitychange", repairOnVisibility);
+    };
+  }, [repairMissingVoicePresence, session?.user.id]);
 
   useEffect(() => {
     syncVoiceParticipants(voiceRoomRef.current);
@@ -1028,6 +1068,7 @@ export function App() {
 
     socket.on("voice:state", (state) => {
       setVoiceServerState(state);
+      window.setTimeout(() => repairMissingVoicePresence(state), 250);
     });
 
     socket.on("voice:moderated", (state) => {
