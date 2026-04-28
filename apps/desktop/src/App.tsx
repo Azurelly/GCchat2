@@ -224,6 +224,7 @@ export function App() {
   const [locallyMutedVoiceUsers, setLocallyMutedVoiceUsers] = useState(loadLocalVoiceMutes);
   const voiceRoomRef = useRef<Room | null>(null);
   const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
+  const voiceJoinedAtRef = useRef<string | null>(null);
   const voiceMutedRef = useRef(false);
   const voiceDeafenedRef = useRef(false);
   const voiceSharingRef = useRef(false);
@@ -367,6 +368,26 @@ export function App() {
     });
   }, []);
 
+  const announceVoicePresence = useCallback(async () => {
+    if (!voiceRoomRef.current) {
+      return null;
+    }
+
+    const joinedState = await emitVoiceJoin();
+
+    if (!joinedState) {
+      return null;
+    }
+
+    const selfState = await emitVoiceSelfState({
+      selfMuted: voiceMutedRef.current,
+      selfDeafened: voiceDeafenedRef.current,
+      screenSharing: voiceSharingRef.current
+    });
+
+    return selfState ?? joinedState;
+  }, [emitVoiceJoin, emitVoiceSelfState]);
+
   const emitVoiceModeration = useCallback((payload: VoiceModerationRequest) => {
     const currentSocket = socketRef.current;
 
@@ -483,8 +504,29 @@ export function App() {
         return;
       }
 
+      const participantStates = [...voiceServerState.participants];
+
+      if (
+        room &&
+        !participantStates.some((participantState) => participantState.userId === session.user.id)
+      ) {
+        const now = new Date().toISOString();
+
+        participantStates.unshift({
+          userId: session.user.id,
+          selfMuted: voiceMuted,
+          selfDeafened: voiceDeafened,
+          serverMuted: false,
+          serverDeafened: false,
+          screenSharing: voiceSharing,
+          reconnecting: true,
+          joinedAt: voiceJoinedAtRef.current ?? now,
+          updatedAt: now
+        });
+      }
+
       setVoiceParticipants(
-        voiceServerState.participants.map((participantState) => {
+        participantStates.map((participantState) => {
           const liveParticipant = room ? getLiveKitParticipant(room, participantState.userId) : null;
           const profile =
             session.user.id === participantState.userId
@@ -515,7 +557,15 @@ export function App() {
         })
       );
     },
-    [locallyMutedVoiceUsers, session, voiceServerState.participants, voiceVolumes]
+    [
+      locallyMutedVoiceUsers,
+      session,
+      voiceDeafened,
+      voiceMuted,
+      voiceServerState.participants,
+      voiceSharing,
+      voiceVolumes
+    ]
   );
 
   const disconnectVoice = useCallback((notifyServer = true) => {
@@ -526,6 +576,7 @@ export function App() {
     void voiceRoomRef.current?.localParticipant.setScreenShareEnabled(false).catch(() => undefined);
     voiceRoomRef.current?.disconnect();
     voiceRoomRef.current = null;
+    voiceJoinedAtRef.current = null;
     clearVoiceAudio();
     setVoiceStatus("disconnected");
     setVoiceMuted(false);
@@ -593,7 +644,7 @@ export function App() {
       room.on(RoomEvent.Reconnecting, () => setVoiceStatus("reconnecting"));
       room.on(RoomEvent.Reconnected, () => {
         setVoiceStatus("connected");
-        void emitVoiceJoin().then((state) => state && setVoiceServerState(state)).catch((requestError) => {
+        void announceVoicePresence().then((state) => state && setVoiceServerState(state)).catch((requestError) => {
           setError(getMessage(requestError));
         });
       });
@@ -625,11 +676,12 @@ export function App() {
       await room.connect(credentials.url, credentials.token, { autoSubscribe: true });
       await room.localParticipant.setMicrophoneEnabled(true);
       voiceRoomRef.current = room;
+      voiceJoinedAtRef.current = new Date().toISOString();
       setVoiceStatus("connected");
       setVoiceMuted(false);
       setVoiceDeafened(false);
-      const voiceState = await emitVoiceJoin();
-      joinedVoicePresence = true;
+      const voiceState = await announceVoicePresence();
+      joinedVoicePresence = Boolean(voiceState);
       if (voiceState) {
         setVoiceServerState(voiceState);
       }
@@ -742,6 +794,30 @@ export function App() {
   useEffect(() => {
     return () => disconnectVoice();
   }, [disconnectVoice]);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    const syncPresence = () => {
+      if (!voiceRoomRef.current || !socketRef.current?.connected) {
+        return;
+      }
+
+      void announceVoicePresence()
+        .then((state) => {
+          if (state) {
+            setVoiceServerState(state);
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    const timer = window.setInterval(syncPresence, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [announceVoicePresence, session?.user.id]);
 
   useEffect(() => {
     syncVoiceParticipants(voiceRoomRef.current);
@@ -880,24 +956,9 @@ export function App() {
       }
 
       if (voiceRoomRef.current) {
-        socket.emit("voice:join", (response) => {
-          if (response.ok) {
-            setVoiceServerState(response.state);
-          }
-        });
-        socket.emit(
-          "voice:self-state",
-          {
-            selfMuted: voiceMutedRef.current,
-            selfDeafened: voiceDeafenedRef.current,
-            screenSharing: voiceSharingRef.current
-          },
-          (response) => {
-            if (response.ok) {
-              setVoiceServerState(response.state);
-            }
-          }
-        );
+        void announceVoicePresence()
+          .then((state) => state && setVoiceServerState(state))
+          .catch(() => undefined);
       }
     });
 
