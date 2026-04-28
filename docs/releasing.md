@@ -57,6 +57,10 @@ reopens the app on the new version.
 
 Draft and prerelease GitHub Releases are not used for normal auto-updates.
 
+## Codex Responsibility
+
+When Codex finishes a change that should ship to installed desktop users, Codex should handle the full release flow unless the user explicitly asks to pause before release. That includes bumping `apps/desktop/package.json`, committing and pushing `main`, creating and pushing the matching `vX.Y.Z` tag, checking the GitHub Actions workflow, and telling the user when the draft release is ready to publish.
+
 ## Important Notes
 
 - The repo must be public for the free Electron update service.

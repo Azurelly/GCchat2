@@ -30,6 +30,8 @@ Where settings belong:
 
 Release checklist:
 
+Codex owns this entire workflow by default. When the user asks for a feature/fix that should reach installed desktop users, do not stop after local edits or a normal code push. Unless the user explicitly says not to release yet, Codex should bump the desktop version, commit, push `main`, create/push the matching tag, and monitor the GitHub Action/draft release state. The user should not be expected to remember or run the release workflow manually.
+
 1. Bump `apps/desktop/package.json` to the next SemVer version, for example `0.1.1`.
 2. Commit and push the code change to `main`.
 3. Create and push a matching tag from that commit:
