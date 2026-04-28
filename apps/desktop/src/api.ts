@@ -1,0 +1,101 @@
+import type {
+  AuthResponse,
+  BootstrapPayload,
+  CreateMessageRequest,
+  MessageView,
+  UpdateProfileRequest,
+  UploadKind,
+  UploadResponse,
+  UserProfile
+} from "@gcchat/shared";
+
+export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4197";
+
+export class ApiClient {
+  private token: string | null = null;
+
+  public setToken(token: string | null) {
+    this.token = token;
+  }
+
+  public register(username: string, password: string) {
+    return this.request<AuthResponse>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ username, password })
+    });
+  }
+
+  public login(username: string, password: string) {
+    return this.request<AuthResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password })
+    });
+  }
+
+  public me() {
+    return this.request<BootstrapPayload>("/me");
+  }
+
+  public updateProfile(input: UpdateProfileRequest) {
+    return this.request<UserProfile>("/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public getProfile(userId: string) {
+    return this.request<UserProfile>(`/users/${userId}/profile`);
+  }
+
+  public getMessages(channelId: string) {
+    return this.request<MessageView[]>(`/channels/${channelId}/messages`);
+  }
+
+  public createMessage(channelId: string, input: CreateMessageRequest) {
+    return this.request<MessageView>(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public async upload(file: File, kind: UploadKind) {
+    const form = new FormData();
+    form.set("file", file);
+    form.set("kind", kind);
+
+    return this.request<UploadResponse>("/uploads", {
+      method: "POST",
+      body: form,
+      skipJsonContentType: true
+    });
+  }
+
+  private async request<T>(path: string, options: RequestInit & { skipJsonContentType?: boolean } = {}) {
+    const headers = new Headers(options.headers);
+
+    if (!options.skipJsonContentType) {
+      headers.set("content-type", "application/json");
+    }
+
+    if (this.token) {
+      headers.set("authorization", `Bearer ${this.token}`);
+    }
+
+    const response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      headers
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      const message =
+        body && typeof body === "object" && "error" in body
+          ? String(body.error)
+          : "Request failed";
+      throw new Error(message);
+    }
+
+    return body as T;
+  }
+}

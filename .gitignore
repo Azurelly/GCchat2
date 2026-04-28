@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+.vite/
+.turbo/
+.env
+.env.local
+*.log
+dev.db
+prisma/dev.db
+coverage/

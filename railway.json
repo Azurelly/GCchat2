@@ -1,0 +1,14 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "corepack pnpm prisma:generate && corepack pnpm --filter @gcchat/shared build && corepack pnpm --filter @gcchat/server build"
+  },
+  "deploy": {
+    "startCommand": "corepack pnpm prisma:deploy && corepack pnpm --filter @gcchat/server start",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}

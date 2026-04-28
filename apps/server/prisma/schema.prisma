@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String       @id @default(cuid())
+  username     String       @unique
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  profile      Profile?
+  memberships  Membership[]
+  messages     Message[]
+}
+
+model Profile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  displayName String
+  bio         String   @default("")
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Server {
+  id          String       @id @default(cuid())
+  key         String       @unique
+  name        String
+  iconUrl     String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  channels    Channel[]
+  memberships Membership[]
+}
+
+model Channel {
+  id        String    @id @default(cuid())
+  serverId  String
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  server    Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@unique([serverId, name])
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  serverId  String
+  joinedAt  DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serverId])
+}
+
+model Message {
+  id          String       @id @default(cuid())
+  channelId   String
+  authorId    String
+  content     String
+  createdAt   DateTime     @default(now())
+  editedAt    DateTime?
+  channel     Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author      User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+
+  @@index([channelId, createdAt])
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  messageId String
+  url       String
+  fileName  String
+  mimeType  String
+  size      Int
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}

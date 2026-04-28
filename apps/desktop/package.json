@@ -1,0 +1,42 @@
+{
+  "name": "@gcchat/desktop",
+  "version": "0.1.0",
+  "productName": "GCChat",
+  "author": "GCChat",
+  "description": "A Discord-inspired messaging app.",
+  "private": true,
+  "main": ".vite/build/main.js",
+  "scripts": {
+    "dev": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
+    "build": "electron-forge package",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@gcchat/shared": "workspace:*",
+    "electron-squirrel-startup": "^1.0.1",
+    "lucide-react": "^0.475.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "socket.io-client": "^4.8.1",
+    "update-electron-app": "^3.1.2"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.7.0",
+    "@electron-forge/maker-deb": "^7.7.0",
+    "@electron-forge/maker-rpm": "^7.7.0",
+    "@electron-forge/maker-squirrel": "^7.7.0",
+    "@electron-forge/maker-zip": "^7.7.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.7.0",
+    "@electron-forge/plugin-vite": "^7.7.0",
+    "@electron-forge/publisher-github": "^7.7.0",
+    "@electron-forge/shared-types": "^7.7.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.2.0",
+    "vite": "^6.1.0"
+  }
+}

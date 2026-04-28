@@ -1,0 +1,25 @@
+{
+  "name": "gcchat2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Discord-like Electron messaging MVP with a central Node backend.",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @gcchat/server --filter @gcchat/desktop dev",
+    "dev:server": "pnpm --filter @gcchat/server dev",
+    "dev:desktop": "pnpm --filter @gcchat/desktop dev",
+    "build": "pnpm --recursive build",
+    "typecheck": "pnpm --recursive typecheck",
+    "test": "pnpm --filter @gcchat/server test",
+    "make:desktop": "pnpm --filter @gcchat/desktop make",
+    "publish:desktop": "pnpm --filter @gcchat/desktop publish",
+    "prisma:generate": "pnpm --filter @gcchat/server prisma:generate",
+    "prisma:migrate": "pnpm --filter @gcchat/server prisma:migrate",
+    "prisma:deploy": "pnpm --filter @gcchat/server prisma:deploy",
+    "prisma:studio": "pnpm --filter @gcchat/server prisma:studio"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,50 @@
+name: Release desktop app
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build and publish Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release settings
+        shell: pwsh
+        run: |
+          if ("${{ vars.VITE_API_URL }}" -eq "") {
+            throw "Set the repository variable VITE_API_URL to your hosted backend URL before publishing desktop releases."
+          }
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build server tests
+        run: pnpm test
+
+      - name: Publish desktop release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: pnpm publish:desktop
