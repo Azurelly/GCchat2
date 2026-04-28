@@ -37,6 +37,9 @@ jobs:
             throw "Set the repository variable VITE_API_URL to your hosted backend URL before publishing desktop releases."
           }
 
+      - name: Build shared package
+        run: pnpm --filter @gcchat/shared build
+
       - name: Typecheck
         run: pnpm typecheck
 
