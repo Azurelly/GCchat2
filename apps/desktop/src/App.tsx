@@ -224,6 +224,9 @@ export function App() {
   const [locallyMutedVoiceUsers, setLocallyMutedVoiceUsers] = useState(loadLocalVoiceMutes);
   const voiceRoomRef = useRef<Room | null>(null);
   const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
+  const voiceMutedRef = useRef(false);
+  const voiceDeafenedRef = useRef(false);
+  const voiceSharingRef = useRef(false);
   const activeChannel = useMemo(() => {
     if (!session) {
       return null;
@@ -307,6 +310,18 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(localVoiceMuteStorageKey, JSON.stringify(locallyMutedVoiceUsers));
   }, [locallyMutedVoiceUsers]);
+
+  useEffect(() => {
+    voiceMutedRef.current = voiceMuted;
+  }, [voiceMuted]);
+
+  useEffect(() => {
+    voiceDeafenedRef.current = voiceDeafened;
+  }, [voiceDeafened]);
+
+  useEffect(() => {
+    voiceSharingRef.current = voiceSharing;
+  }, [voiceSharing]);
 
   const clearVoiceAudio = useCallback(() => {
     for (const element of voiceAudioElementsRef.current) {
@@ -400,11 +415,12 @@ export function App() {
       }
 
       for (const participant of room.remoteParticipants.values()) {
-        const volume = voiceDeafened
-          ? 0
-          : locallyMutedVoiceUsers.includes(participant.identity)
-            ? 0
-            : (voiceVolumes[participant.identity] ?? 100) / 100;
+        const volume = getVoiceVolumeGain(
+          participant.identity,
+          voiceVolumes,
+          locallyMutedVoiceUsers,
+          voiceDeafened
+        );
 
         participant.setVolume(volume);
       }
@@ -525,6 +541,7 @@ export function App() {
     }
 
     let room: Room | null = null;
+    let joinedVoicePresence = false;
     setVoiceStatus("connecting");
     setError(null);
 
@@ -541,9 +558,12 @@ export function App() {
         element.autoplay = true;
         element.setAttribute("playsinline", "true");
         element.style.display = "none";
-        element.volume = locallyMutedVoiceUsers.includes(participant.identity)
-          ? 0
-          : (voiceVolumes[participant.identity] ?? 100) / 100;
+        element.volume = getVoiceVolumeGain(
+          participant.identity,
+          voiceVolumes,
+          locallyMutedVoiceUsers,
+          voiceDeafened
+        );
         document.body.appendChild(element);
         voiceAudioElementsRef.current.add(element);
       };
@@ -609,6 +629,7 @@ export function App() {
       setVoiceMuted(false);
       setVoiceDeafened(false);
       const voiceState = await emitVoiceJoin();
+      joinedVoicePresence = true;
       if (voiceState) {
         setVoiceServerState(voiceState);
       }
@@ -616,6 +637,9 @@ export function App() {
       syncScreenShares(room);
       applyVoiceAudioPreferences(room);
     } catch (requestError) {
+      if (joinedVoicePresence) {
+        socketRef.current?.emit("voice:leave");
+      }
       room?.disconnect();
       clearVoiceAudio();
       setVoiceStatus("failed");
@@ -853,6 +877,27 @@ export function App() {
     socket.on("connect", () => {
       for (const channel of session.channels) {
         socket.emit("channel:join", { channelId: channel.id });
+      }
+
+      if (voiceRoomRef.current) {
+        socket.emit("voice:join", (response) => {
+          if (response.ok) {
+            setVoiceServerState(response.state);
+          }
+        });
+        socket.emit(
+          "voice:self-state",
+          {
+            selfMuted: voiceMutedRef.current,
+            selfDeafened: voiceDeafenedRef.current,
+            screenSharing: voiceSharingRef.current
+          },
+          (response) => {
+            if (response.ok) {
+              setVoiceServerState(response.state);
+            }
+          }
+        );
       }
     });
 
@@ -1240,7 +1285,7 @@ export function App() {
           onWatchStream={setSelectedStreamUserId}
           onVoiceProfile={setSelectedProfile}
           onSetVoiceVolume={(userId, volume) =>
-            setVoiceVolumes((current) => ({ ...current, [userId]: volume }))
+            setVoiceVolumes((current) => ({ ...current, [userId]: normalizeVoiceVolume(volume) }))
           }
           onToggleLocalVoiceMute={(userId) =>
             setLocallyMutedVoiceUsers((current) =>
@@ -2143,11 +2188,11 @@ function VoiceUserContextMenu({
         <input
           type="range"
           min="0"
-          max="200"
-          value={participant.locallyMuted ? 0 : participant.volume}
-          onChange={(event) => onSetVolume(participant.userId, Number(event.target.value))}
+          max="100"
+          value={participant.locallyMuted ? 0 : normalizeVoiceVolume(participant.volume)}
+          onChange={(event) => onSetVolume(participant.userId, normalizeVoiceVolume(event.target.value))}
         />
-        <small>{participant.locallyMuted ? "Muted locally" : `${participant.volume}%`}</small>
+        <small>{participant.locallyMuted ? "Muted locally" : `${normalizeVoiceVolume(participant.volume)}%`}</small>
       </label>
       <button
         type="button"
@@ -5099,11 +5144,38 @@ function loadAppearancePreferences(): AppearancePreferences {
 }
 
 function loadVoiceVolumes(): Record<string, number> {
-  return readJson<Record<string, number>>(voiceVolumeStorageKey) ?? {};
+  const raw = readJson<Record<string, number>>(voiceVolumeStorageKey) ?? {};
+
+  return Object.fromEntries(
+    Object.entries(raw).map(([userId, volume]) => [userId, normalizeVoiceVolume(volume)])
+  );
 }
 
 function loadLocalVoiceMutes(): string[] {
   return readJson<string[]>(localVoiceMuteStorageKey) ?? [];
+}
+
+function normalizeVoiceVolume(value: unknown) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return 100;
+  }
+
+  return Math.min(Math.max(Math.round(parsed), 0), 100);
+}
+
+function getVoiceVolumeGain(
+  userId: string,
+  volumes: Record<string, number>,
+  locallyMutedUsers: string[],
+  deafened: boolean
+) {
+  if (deafened || locallyMutedUsers.includes(userId)) {
+    return 0;
+  }
+
+  return normalizeVoiceVolume(volumes[userId] ?? 100) / 100;
 }
 
 function readJson<T>(key: string): T | null {

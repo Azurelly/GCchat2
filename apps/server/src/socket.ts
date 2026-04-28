@@ -53,6 +53,7 @@ export function attachRealtime(
   );
   const onlineUsers = new Map<string, number>();
   const voiceParticipants = new Map<string, VoicePresence>();
+  const voiceParticipantSockets = new Map<string, Set<string>>();
   const voiceModeration = new Map<string, VoiceModerationState>();
   const voiceReconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -101,7 +102,11 @@ export function attachRealtime(
         void emitMembersWithPresence(serverId);
       }
 
-      markVoiceParticipantReconnecting(socket.data.user.id);
+      const voiceSocketState = unregisterVoiceSocket(socket.data.user.id, socket.id);
+
+      if (voiceSocketState.wasRegistered && !voiceSocketState.hasRemainingSockets) {
+        markVoiceParticipantReconnecting(socket.data.user.id);
+      }
     });
 
     socket.on("channel:join", async (payload, ack) => {
@@ -157,6 +162,7 @@ export function attachRealtime(
         const existing = voiceParticipants.get(socket.data.user.id);
 
         clearVoiceReconnectTimer(socket.data.user.id);
+        registerVoiceSocket(socket.data.user.id, socket.id);
         voiceParticipants.set(socket.data.user.id, {
           userId: socket.data.user.id,
           selfMuted: existing?.selfMuted ?? (moderation.serverMuted || moderation.serverDeafened),
@@ -180,9 +186,14 @@ export function attachRealtime(
     socket.on("voice:leave", async (ack) => {
       try {
         await assertSocketActive(socket.data.user.id);
-        clearVoiceReconnectTimer(socket.data.user.id);
-        voiceParticipants.delete(socket.data.user.id);
-        io.emit("voice:state", buildVoiceState());
+        const voiceSocketState = unregisterVoiceSocket(socket.data.user.id, socket.id);
+
+        if (!voiceSocketState.hasRemainingSockets) {
+          clearVoiceReconnectTimer(socket.data.user.id);
+          voiceParticipants.delete(socket.data.user.id);
+          io.emit("voice:state", buildVoiceState());
+        }
+
         ack?.({ ok: true });
       } catch (error) {
         ack?.({ ok: false, error: getErrorMessage(error) });
@@ -245,6 +256,7 @@ export function attachRealtime(
 
         if (payload.disconnect) {
           clearVoiceReconnectTimer(payload.targetUserId);
+          voiceParticipantSockets.delete(payload.targetUserId);
           voiceParticipants.delete(payload.targetUserId);
           io.to(userRoom(payload.targetUserId)).emit("voice:force-disconnect");
         } else {
@@ -371,6 +383,30 @@ export function attachRealtime(
 
     clearTimeout(timer);
     voiceReconnectTimers.delete(userId);
+  }
+
+  function registerVoiceSocket(userId: string, socketId: string) {
+    const sockets = voiceParticipantSockets.get(userId) ?? new Set<string>();
+
+    sockets.add(socketId);
+    voiceParticipantSockets.set(userId, sockets);
+  }
+
+  function unregisterVoiceSocket(userId: string, socketId: string) {
+    const sockets = voiceParticipantSockets.get(userId);
+
+    if (!sockets) {
+      return { wasRegistered: false, hasRemainingSockets: false };
+    }
+
+    const wasRegistered = sockets.delete(socketId);
+
+    if (sockets.size === 0) {
+      voiceParticipantSockets.delete(userId);
+      return { wasRegistered, hasRemainingSockets: false };
+    }
+
+    return { wasRegistered, hasRemainingSockets: true };
   }
 
   async function emitMembersWithPresence(serverId: string) {
