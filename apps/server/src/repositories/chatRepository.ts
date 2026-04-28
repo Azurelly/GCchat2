@@ -10,6 +10,7 @@ import type {
   SetCalendarEventOptInRequest,
   ServerMemberView,
   ServerSummary,
+  UpdateAccountRequest,
   UpdateUserBanRequest,
   UpdateProfileRequest,
   UpdateUserRoleRequest,
@@ -32,9 +33,14 @@ export interface ChatRepository {
   ensureGlobalCommunity(): Promise<GlobalCommunity>;
   createUser(input: { username: string; passwordHash: string }): Promise<UserProfile>;
   findUserAuthByUsername(username: string): Promise<UserAuthRecord | null>;
+  findUserAuthById(userId: string): Promise<UserAuthRecord | null>;
   getBootstrap(userId: string): Promise<BootstrapPayload>;
   getProfile(userId: string): Promise<UserProfile | null>;
   updateProfile(userId: string, input: UpdateProfileRequest): Promise<UserProfile>;
+  updateAccount(
+    userId: string,
+    input: Omit<UpdateAccountRequest, "currentPassword"> & { passwordHash?: string }
+  ): Promise<UserProfile>;
   listServerMembers(serverId: string): Promise<ServerMemberView[]>;
   listChannels(serverId: string): Promise<ChannelSummary[]>;
   createChannel(

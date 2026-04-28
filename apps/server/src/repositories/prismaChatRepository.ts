@@ -14,6 +14,7 @@ import {
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
+  type UpdateAccountRequest,
   type UpdateUserBanRequest,
   type UpdateProfileRequest,
   type UpdateUserRoleRequest,
@@ -122,12 +123,16 @@ export class PrismaChatRepository implements ChatRepository {
       select: { id: true, username: true, passwordHash: true, bannedAt: true }
     });
 
-    return user
-      ? {
-          ...user,
-          bannedAt: user.bannedAt?.toISOString() ?? null
-        }
-      : null;
+    return mapAuthRecord(user);
+  }
+
+  public async findUserAuthById(userId: string): Promise<UserAuthRecord | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, username: true, passwordHash: true, bannedAt: true }
+    });
+
+    return mapAuthRecord(user);
   }
 
   public async getBootstrap(userId: string): Promise<BootstrapPayload> {
@@ -195,6 +200,38 @@ export class PrismaChatRepository implements ChatRepository {
     }
 
     return user;
+  }
+
+  public async updateAccount(
+    userId: string,
+    input: Omit<UpdateAccountRequest, "currentPassword"> & { passwordHash?: string }
+  ) {
+    const existing = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { profile: true }
+    });
+
+    if (!existing) {
+      throw new HttpError(404, "User not found");
+    }
+
+    const data: { username?: string; passwordHash?: string } = {};
+
+    if (input.username) {
+      data.username = input.username;
+    }
+
+    if (input.passwordHash) {
+      data.passwordHash = input.passwordHash;
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data,
+      include: { profile: true }
+    });
+
+    return mapUserProfile(user);
   }
 
   public async listServerMembers(serverId: string): Promise<ServerMemberView[]> {
@@ -488,6 +525,19 @@ function mapUserProfile(user: UserWithProfile): UserProfile {
     role: user.role,
     bannedAt: user.bannedAt?.toISOString() ?? null
   };
+}
+
+function mapAuthRecord(
+  user: { id: string; username: string; passwordHash: string; bannedAt: Date | null } | null
+): UserAuthRecord | null {
+  return user
+    ? {
+        id: user.id,
+        username: user.username,
+        passwordHash: user.passwordHash,
+        bannedAt: user.bannedAt?.toISOString() ?? null
+      }
+    : null;
 }
 
 function mapChannel(channel: { id: string; serverId: string; name: string }): ChannelSummary {

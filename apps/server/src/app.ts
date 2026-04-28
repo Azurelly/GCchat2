@@ -30,6 +30,7 @@ import {
   loginSchema,
   registerSchema,
   setCalendarEventOptInSchema,
+  updateAccountSchema,
   updateUserBanSchema,
   updateProfileSchema,
   updateUserRoleSchema
@@ -134,6 +135,40 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
     asyncRoute(async (req, res) => {
       const parsed = updateProfileSchema.parse(req.body) as UpdateProfileRequest;
       const profile = await repo.updateProfile((req as AuthedRequest).user.id, parsed);
+      realtime?.emitProfileUpdated(profile);
+      res.json(profile);
+    })
+  );
+
+  app.patch(
+    "/me/account",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const parsed = updateAccountSchema.parse(req.body);
+      const input: { username?: string; passwordHash?: string } = {};
+
+      if (parsed.username) {
+        const username = normalizeUsername(parsed.username);
+        const existing = await repo.findUserAuthByUsername(username);
+
+        if (existing && existing.id !== user.id) {
+          throw new HttpError(409, "Username is already taken");
+        }
+
+        input.username = username;
+      }
+
+      if (parsed.newPassword) {
+        const auth = await repo.findUserAuthById(user.id);
+
+        if (!auth || !parsed.currentPassword || !(await verifyPassword(auth.passwordHash, parsed.currentPassword))) {
+          throw new HttpError(401, "Current password is incorrect");
+        }
+
+        input.passwordHash = await hashPassword(parsed.newPassword);
+      }
+
+      const profile = await repo.updateAccount(user.id, input);
       realtime?.emitProfileUpdated(profile);
       res.json(profile);
     })

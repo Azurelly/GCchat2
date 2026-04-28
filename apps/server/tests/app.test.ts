@@ -81,6 +81,34 @@ describe("auth and profile API", () => {
     expect(card.body.createdAt).toEqual(expect.any(String));
     expect(card.body.avatarUrl).toBe("https://example.com/avatar.png");
   });
+
+  it("updates username and password from account settings", async () => {
+    const { app } = makeApp();
+    const registered = await request(app)
+      .post("/auth/register")
+      .send({ username: "Taylor", password: "password123" })
+      .expect(201);
+
+    await request(app)
+      .patch("/me/account")
+      .set("authorization", `Bearer ${registered.body.token}`)
+      .send({
+        username: "TaylorNew",
+        currentPassword: "password123",
+        newPassword: "newpassword123"
+      })
+      .expect(200);
+
+    await request(app)
+      .post("/auth/login")
+      .send({ username: "taylornew", password: "password123" })
+      .expect(401);
+
+    await request(app)
+      .post("/auth/login")
+      .send({ username: "taylornew", password: "newpassword123" })
+      .expect(200);
+  });
 });
 
 describe("messages API", () => {

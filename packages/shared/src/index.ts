@@ -107,6 +107,12 @@ export interface UpdateProfileRequest {
   avatarUrl?: string | null;
 }
 
+export interface UpdateAccountRequest {
+  username?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
 export interface CreateMessageRequest {
   content: string;
   attachments?: Array<{

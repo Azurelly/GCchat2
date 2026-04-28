@@ -9,6 +9,7 @@ import type {
   DeleteChannelRequest,
   MessageView,
   SetCalendarEventOptInRequest,
+  UpdateAccountRequest,
   UpdateUserBanRequest,
   UpdateProfileRequest,
   UpdateUserRoleRequest,
@@ -46,6 +47,13 @@ export class ApiClient {
 
   public updateProfile(input: UpdateProfileRequest) {
     return this.request<UserProfile>("/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public updateAccount(input: UpdateAccountRequest) {
+    return this.request<UserProfile>("/me/account", {
       method: "PATCH",
       body: JSON.stringify(input)
     });

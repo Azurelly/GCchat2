@@ -25,6 +25,18 @@ export const updateProfileSchema = z
   })
   .strict();
 
+export const updateAccountSchema = z
+  .object({
+    username: usernameSchema.optional(),
+    currentPassword: z.string().min(1).max(128).optional(),
+    newPassword: z.string().min(8, "Password must be at least 8 characters.").max(128).optional()
+  })
+  .strict()
+  .refine((value) => !value.newPassword || value.currentPassword, {
+    message: "Current password is required to change password.",
+    path: ["currentPassword"]
+  });
+
 export const attachmentInputSchema = z.object({
   url: z.string().url(),
   fileName: z.string().min(1).max(180),

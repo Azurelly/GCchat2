@@ -1,20 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import {
   AtSign,
   Ban,
+  Bell,
   CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock,
   Download,
+  FileUp,
   Hash,
-  ImagePlus,
+  KeyRound,
+  Link,
   Loader2,
   LogOut,
   MessageCircle,
   Minus,
   Plus,
+  Palette,
+  Paperclip,
   RefreshCw,
   Send,
   Settings,
@@ -23,6 +36,8 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  User,
+  Volume2,
   Users,
   X
 } from "lucide-react";
@@ -43,9 +58,26 @@ import type {
 import { API_URL, ApiClient } from "./api";
 
 const tokenStorageKey = "gcchat.token";
+const notificationStorageKey = "gcchat.notification-preferences";
+const appearanceStorageKey = "gcchat.appearance-preferences";
+const eventTokenPattern = /\[\[gc-event:([^\]]+)]]/g;
 
 type ChatSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 type ActiveFeature = "chat" | "calendar";
+type ThemeName = "dark" | "light" | "midnight" | "forest" | "berry";
+type NotificationSound = "ping" | "chime" | "alert" | "none";
+
+interface NotificationPreferences {
+  mentionToasts: boolean;
+  mentionSound: boolean;
+  desktopNotifications: boolean;
+  sound: NotificationSound;
+  volume: number;
+}
+
+interface AppearancePreferences {
+  theme: ThemeName;
+}
 
 interface Session extends BootstrapPayload {
   token: string;
@@ -57,8 +89,9 @@ export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [activeFeature, setActiveFeature] = useState<ActiveFeature>("chat");
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<MessageView[]>([]);
+  const [messagesByChannel, setMessagesByChannel] = useState<Record<string, MessageView[]>>({});
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
+  const [calendarFocusEventId, setCalendarFocusEventId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [banned, setBanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +102,9 @@ export function App() {
     phase: "idle",
     canRestart: false
   });
+  const [notificationPrefs, setNotificationPrefs] = useState(loadNotificationPreferences);
+  const [appearancePrefs, setAppearancePrefs] = useState(loadAppearancePreferences);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: MessageView }>>([]);
   const socketRef = useRef<ChatSocket | null>(null);
   const activeChannel = useMemo(() => {
     if (!session) {
@@ -81,6 +117,7 @@ export function App() {
       session.channel
     );
   }, [activeChannelId, session]);
+  const messages = activeChannel ? messagesByChannel[activeChannel.id] ?? [] : [];
 
   useEffect(() => {
     const token = localStorage.getItem(tokenStorageKey);
@@ -116,38 +153,37 @@ export function App() {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem(notificationStorageKey, JSON.stringify(notificationPrefs));
+  }, [notificationPrefs]);
+
+  useEffect(() => {
+    localStorage.setItem(appearanceStorageKey, JSON.stringify(appearancePrefs));
+  }, [appearancePrefs]);
+
   const enterBannedState = () => {
     localStorage.removeItem(tokenStorageKey);
     api.setToken(null);
     socketRef.current?.disconnect();
     setBanned(true);
     setSession(null);
-    setMessages([]);
+    setMessagesByChannel({});
     setCalendarEvents([]);
     setSelectedProfile(null);
     setSettingsOpen(false);
   };
 
   useEffect(() => {
-    if (!session || !activeChannel) {
+    if (!session) {
       socketRef.current?.disconnect();
       socketRef.current = null;
-      setMessages([]);
+      setMessagesByChannel({});
       setCalendarEvents([]);
       return;
     }
 
     api.setToken(session.token);
     let active = true;
-
-    api
-      .getMessages(activeChannel.id)
-      .then((history) => {
-        if (active) {
-          setMessages(history);
-        }
-      })
-      .catch((requestError) => setError(getMessage(requestError)));
 
     api
       .getCalendarEvents()
@@ -164,30 +200,26 @@ export function App() {
     });
 
     socket.on("connect", () => {
-      socket.emit("channel:join", { channelId: activeChannel.id });
+      for (const channel of session.channels) {
+        socket.emit("channel:join", { channelId: channel.id });
+      }
     });
 
     socket.on("message:new", (message) => {
-      if (message.channelId !== activeChannel.id) {
-        return;
+      setMessagesByChannel((current) => upsertMessageInChannel(current, message));
+
+      if (
+        session.user.id !== message.author.id &&
+        messageMentionsUser(message.content, session.user) &&
+        shouldNotifyMention(notificationPrefs)
+      ) {
+        showMentionNotification(message, notificationPrefs, setToasts);
       }
-
-      setMessages((current) => {
-        if (current.some((existing) => existing.id === message.id)) {
-          return current;
-        }
-
-        return [...current, message];
-      });
     });
 
     socket.on("profile:updated", (profile) => {
       setSession((current) => (current ? applyProfileUpdate(current, profile) : current));
-      setMessages((current) =>
-        current.map((message) =>
-          message.author.id === profile.id ? { ...message, author: profile } : message
-        )
-      );
+      setMessagesByChannel((current) => applyProfileUpdateToMessages(current, profile));
       setCalendarEvents((current) => applyProfileUpdateToCalendarEvents(current, profile));
       setSelectedProfile((current) => (current?.id === profile.id ? profile : current));
     });
@@ -232,7 +264,37 @@ export function App() {
       active = false;
       socket.disconnect();
     };
-  }, [activeChannel?.id, session?.token]);
+  }, [notificationPrefs, session?.token]);
+
+  useEffect(() => {
+    if (!session || !activeChannel) {
+      return;
+    }
+
+    socketRef.current?.emit("channel:join", { channelId: activeChannel.id });
+
+    if (messagesByChannel[activeChannel.id]) {
+      return;
+    }
+
+    let active = true;
+
+    api
+      .getMessages(activeChannel.id)
+      .then((history) => {
+        if (active) {
+          setMessagesByChannel((current) => ({
+            ...current,
+            [activeChannel.id]: history
+          }));
+        }
+      })
+      .catch((requestError) => setError(getMessage(requestError)));
+
+    return () => {
+      active = false;
+    };
+  }, [activeChannel?.id, messagesByChannel, session]);
 
   const handleAuth = (auth: AuthResponse) => {
     localStorage.setItem(tokenStorageKey, auth.token);
@@ -249,6 +311,7 @@ export function App() {
     socketRef.current?.disconnect();
     setSession(null);
     setActiveChannelId(null);
+    setMessagesByChannel({});
     setBanned(false);
     setSelectedProfile(null);
     setSettingsOpen(false);
@@ -305,9 +368,22 @@ export function App() {
     setSelectedProfile(profile);
   };
 
+  const handleOptimisticMessage = (message: MessageView) => {
+    setMessagesByChannel((current) => upsertMessageInChannel(current, message));
+  };
+
+  const handleConfirmedMessage = (temporaryId: string, message: MessageView) => {
+    setMessagesByChannel((current) => replaceMessageInChannel(current, temporaryId, message));
+  };
+
+  const handleOpenCalendarEvent = (eventId: string) => {
+    setCalendarFocusEventId(eventId);
+    setActiveFeature("calendar");
+  };
+
   if (loading) {
     return (
-      <AppFrame updateStatus={updateStatus}>
+      <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
         <div className="loading-screen">
           <Loader2 className="spin" size={28} />
         </div>
@@ -317,7 +393,7 @@ export function App() {
 
   if (banned) {
     return (
-      <AppFrame updateStatus={updateStatus}>
+      <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
         <BannedScreen onLogout={handleLogout} />
       </AppFrame>
     );
@@ -325,7 +401,7 @@ export function App() {
 
   if (!session) {
     return (
-      <AppFrame updateStatus={updateStatus}>
+      <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
         <AuthScreen onAuth={handleAuth} onBanned={() => setBanned(true)} />
       </AppFrame>
     );
@@ -334,7 +410,7 @@ export function App() {
   const currentChannel = activeChannel ?? session.channel;
 
   return (
-    <AppFrame updateStatus={updateStatus}>
+    <AppFrame updateStatus={updateStatus} theme={appearancePrefs.theme}>
     <div className={`app-shell ${activeFeature === "chat" ? "chat-shell" : "calendar-shell"}`}>
       <aside className="server-rail">
         <button
@@ -387,23 +463,31 @@ export function App() {
             </div>
           ) : null}
 
-          <MessageList messages={messages} onProfile={setSelectedProfile} />
+          <MessageList
+            messages={messages}
+            members={session.members}
+            calendarEvents={calendarEvents}
+            onProfile={setSelectedProfile}
+            onEventUpdated={handleCalendarEventUpdated}
+            onOpenCalendarEvent={handleOpenCalendarEvent}
+            onError={setError}
+          />
           <Composer
             channel={currentChannel}
+            currentUser={session.user}
+            members={session.members}
+            calendarEvents={calendarEvents}
             socket={socketRef.current}
             onError={setError}
-            onFallbackMessage={(message) =>
-              setMessages((current) =>
-                current.some((existing) => existing.id === message.id)
-                  ? current
-                  : [...current, message]
-              )
-            }
+            onOptimisticMessage={handleOptimisticMessage}
+            onConfirmedMessage={handleConfirmedMessage}
           />
         </main>
       ) : (
         <CalendarView
           events={calendarEvents}
+          focusEventId={calendarFocusEventId}
+          onFocusHandled={() => setCalendarFocusEventId(null)}
           onCreated={handleCalendarEventCreated}
           onUpdated={handleCalendarEventUpdated}
           onProfile={setSelectedProfile}
@@ -420,13 +504,18 @@ export function App() {
       )}
 
       {settingsOpen ? (
-        <SettingsModal
+        <SettingsPage
           user={session.user}
+          notificationPrefs={notificationPrefs}
+          appearancePrefs={appearancePrefs}
           onClose={() => setSettingsOpen(false)}
           onSaved={handleProfileSaved}
+          onNotificationPrefsChange={setNotificationPrefs}
+          onAppearancePrefsChange={setAppearancePrefs}
           onError={setError}
         />
       ) : null}
+      <ToastStack toasts={toasts} onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))} />
 
       {selectedProfile ? (
         <ProfileCard
@@ -456,13 +545,15 @@ export function App() {
 
 function AppFrame({
   updateStatus,
+  theme,
   children
 }: {
   updateStatus: UpdateStatus;
-  children: React.ReactNode;
+  theme: ThemeName;
+  children: ReactNode;
 }) {
   return (
-    <div className="desktop-frame">
+    <div className={`desktop-frame theme-${theme}`}>
       <TitleBar updateStatus={updateStatus} />
       {children}
     </div>
@@ -766,10 +857,20 @@ function ChannelSidebar({
 
 function MessageList({
   messages,
-  onProfile
+  members,
+  calendarEvents,
+  onProfile,
+  onEventUpdated,
+  onOpenCalendarEvent,
+  onError
 }: {
   messages: MessageView[];
+  members: ServerMemberView[];
+  calendarEvents: CalendarEventView[];
   onProfile: (profile: UserProfile) => void;
+  onEventUpdated: (event: CalendarEventView) => void;
+  onOpenCalendarEvent: (eventId: string) => void;
+  onError: (error: string | null) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -791,7 +892,7 @@ function MessageList({
   return (
     <section className="message-list">
       {messages.map((message) => (
-        <article className="message-row" key={message.id}>
+        <article className={`message-row ${message.id.startsWith("temp-") ? "pending" : ""}`} key={message.id}>
           <button className="avatar-button" onClick={() => onProfile(message.author)}>
             <Avatar profile={message.author} size="md" />
           </button>
@@ -800,7 +901,20 @@ function MessageList({
               <button onClick={() => onProfile(message.author)}>{message.author.displayName}</button>
               <time>{formatTime(message.createdAt)}</time>
             </div>
-            {message.content ? <p>{message.content}</p> : null}
+            {renderMessageText(stripEventTokens(message.content), members, onProfile)}
+            {extractEventIds(message.content).map((eventId) => {
+              const event = calendarEvents.find((candidate) => candidate.id === eventId);
+
+              return event ? (
+                <MessageEventEmbed
+                  event={event}
+                  key={eventId}
+                  onUpdated={onEventUpdated}
+                  onOpenCalendarEvent={onOpenCalendarEvent}
+                  onError={onError}
+                />
+              ) : null;
+            })}
             {message.attachments.length > 0 ? (
               <div className="attachments">
                 {message.attachments.map((attachment) => (
@@ -828,22 +942,98 @@ function MessageList({
   );
 }
 
+function MessageEventEmbed({
+  event,
+  onUpdated,
+  onOpenCalendarEvent,
+  onError
+}: {
+  event: CalendarEventView;
+  onUpdated: (event: CalendarEventView) => void;
+  onOpenCalendarEvent: (eventId: string) => void;
+  onError: (error: string | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const follow = async () => {
+    setBusy(true);
+    onError(null);
+
+    try {
+      const updated = await api.setCalendarEventOptIn(event.id, { optedIn: true });
+      onUpdated(updated);
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="message-event-embed">
+      <div className="event-time">
+        <CalendarDays size={15} />
+        <time>{formatEventDate(event.startAt)}</time>
+      </div>
+      <h3>{event.title}</h3>
+      {event.description ? <p>{event.description}</p> : null}
+      <div className="message-event-actions">
+        <button className="event-opt-button" onClick={follow} disabled={busy || event.viewerOptedIn}>
+          {busy ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
+          {event.viewerOptedIn ? "Following" : "Follow"}
+        </button>
+        <button className="secondary-button compact" onClick={() => onOpenCalendarEvent(event.id)}>
+          Open
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function Composer({
   channel,
+  currentUser,
+  members,
+  calendarEvents,
   socket,
   onError,
-  onFallbackMessage
+  onOptimisticMessage,
+  onConfirmedMessage
 }: {
   channel: ChannelSummary;
+  currentUser: UserProfile;
+  members: ServerMemberView[];
+  calendarEvents: CalendarEventView[];
   socket: ChatSocket | null;
   onError: (error: string | null) => void;
-  onFallbackMessage: (message: MessageView) => void;
+  onOptimisticMessage: (message: MessageView) => void;
+  onConfirmedMessage: (temporaryId: string, message: MessageView) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [attachedEvent, setAttachedEvent] = useState<CalendarEventView | null>(null);
   const [sending, setSending] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [eventPickerOpen, setEventPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const canSend = draft.trim().length > 0 || file;
+  const mentionQuery = getMentionQuery(draft);
+  const mentionSuggestions = useMemo(
+    () =>
+      mentionQuery === null
+        ? []
+        : members
+            .filter((member) => !member.bannedAt)
+            .filter((member) => {
+              const query = mentionQuery.toLowerCase();
+              return (
+                member.username.toLowerCase().startsWith(query) ||
+                member.displayName.toLowerCase().startsWith(query)
+              );
+            })
+            .slice(0, 8),
+    [members, mentionQuery]
+  );
+  const canSend = draft.trim().length > 0 || file || attachedEvent;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -854,6 +1044,8 @@ function Composer({
 
     setSending(true);
     onError(null);
+
+    const temporaryId = `temp-${crypto.randomUUID()}`;
 
     try {
       const attachments: CreateMessageRequest["attachments"] = [];
@@ -868,24 +1060,45 @@ function Composer({
         });
       }
 
+      const content = `${draft.trim()}${attachedEvent ? `\n${createEventToken(attachedEvent.id)}` : ""}`.trim();
       const payload = {
         channelId: channel.id,
-        content: draft,
+        content,
         attachments
       };
+      const optimisticMessage: MessageView = {
+        id: temporaryId,
+        channelId: channel.id,
+        content,
+        createdAt: new Date().toISOString(),
+        editedAt: null,
+        author: currentUser,
+        attachments:
+          attachments?.map((attachment, index) => ({
+            id: `${temporaryId}-attachment-${index}`,
+            ...attachment
+          })) ?? []
+      };
 
+      onOptimisticMessage(optimisticMessage);
+
+      let confirmed: MessageView;
       if (socket?.connected) {
-        await emitMessage(socket, payload);
+        confirmed = await emitMessage(socket, payload);
       } else {
-        const message = await api.createMessage(channel.id, {
+        confirmed = await api.createMessage(channel.id, {
           content: payload.content,
           attachments
         });
-        onFallbackMessage(message);
       }
+
+      onConfirmedMessage(temporaryId, confirmed);
 
       setDraft("");
       setFile(null);
+      setAttachedEvent(null);
+      setAttachmentMenuOpen(false);
+      setEventPickerOpen(false);
 
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -897,27 +1110,98 @@ function Composer({
     }
   };
 
+  const applyMention = (member: ServerMemberView) => {
+    setDraft((current) => replaceMentionQuery(current, member.username));
+  };
+
   return (
     <form className="composer" onSubmit={submit}>
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,image/gif"
         hidden
         onChange={(event) => setFile(event.target.files?.[0] ?? null)}
       />
+      {mentionSuggestions.length > 0 ? (
+        <div className="mention-menu">
+          <div className="mention-menu-title">Members</div>
+          {mentionSuggestions.map((member) => (
+            <button type="button" key={member.id} onClick={() => applyMention(member)}>
+              <Avatar profile={member} size="xs" status={member.isOnline ? "online" : "offline"} />
+              <span>{member.displayName}</span>
+              <small>@{member.username}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {attachmentMenuOpen ? (
+        <div className="attachment-menu">
+          <button
+            type="button"
+            onClick={() => {
+              fileInputRef.current?.click();
+              setAttachmentMenuOpen(false);
+            }}
+          >
+            <FileUp size={17} />
+            Upload a file
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEventPickerOpen((current) => !current);
+            }}
+          >
+            <Link size={17} />
+            Link event
+          </button>
+        </div>
+      ) : null}
+      {eventPickerOpen ? (
+        <div className="event-picker-menu">
+          <div className="mention-menu-title">Link Event</div>
+          {calendarEvents.length === 0 ? (
+            <p>No events yet.</p>
+          ) : (
+            calendarEvents
+              .slice()
+              .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))
+              .map((event) => (
+                <button
+                  type="button"
+                  key={event.id}
+                  onClick={() => {
+                    setAttachedEvent(event);
+                    setEventPickerOpen(false);
+                    setAttachmentMenuOpen(false);
+                  }}
+                >
+                  <strong>{event.title}</strong>
+                  <small>{formatEventDate(event.startAt)}</small>
+                </button>
+              ))
+          )}
+        </div>
+      ) : null}
       <button
         type="button"
         className="icon-button attach-button"
-        onClick={() => fileInputRef.current?.click()}
-        aria-label="Add image"
+        onClick={() => setAttachmentMenuOpen((current) => !current)}
+        aria-label="Add attachment"
       >
-        <ImagePlus size={20} />
+        <Paperclip size={20} />
       </button>
       <div className="composer-input">
         {file ? (
           <button type="button" className="file-chip" onClick={() => setFile(null)}>
             {file.name}
+            <X size={14} />
+          </button>
+        ) : null}
+        {attachedEvent ? (
+          <button type="button" className="file-chip event-chip" onClick={() => setAttachedEvent(null)}>
+            <CalendarDays size={14} />
+            {attachedEvent.title}
             <X size={14} />
           </button>
         ) : null}
@@ -936,6 +1220,8 @@ function Composer({
 
 function CalendarView({
   events,
+  focusEventId,
+  onFocusHandled,
   onCreated,
   onUpdated,
   onProfile,
@@ -944,6 +1230,8 @@ function CalendarView({
   onDismissError
 }: {
   events: CalendarEventView[];
+  focusEventId: string | null;
+  onFocusHandled: () => void;
   onCreated: (event: CalendarEventView) => void;
   onUpdated: (event: CalendarEventView) => void;
   onProfile: (profile: UserProfile) => void;
@@ -979,6 +1267,24 @@ function CalendarView({
       setSelectedEventId(null);
     }
   }, [selectedDayEvents, selectedEventId]);
+
+  useEffect(() => {
+    if (!focusEventId) {
+      return;
+    }
+
+    const event = events.find((candidate) => candidate.id === focusEventId);
+
+    if (!event) {
+      return;
+    }
+
+    const date = new Date(event.startAt);
+    setVisibleMonth(startOfMonth(date));
+    setSelectedDate(toDateInputValue(date));
+    setSelectedEventId(event.id);
+    onFocusHandled();
+  }, [events, focusEventId, onFocusHandled]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1322,21 +1628,33 @@ function MembersPanel({
   );
 }
 
-function SettingsModal({
+function SettingsPage({
   user,
+  notificationPrefs,
+  appearancePrefs,
   onClose,
   onSaved,
+  onNotificationPrefsChange,
+  onAppearancePrefsChange,
   onError
 }: {
   user: UserProfile;
+  notificationPrefs: NotificationPreferences;
+  appearancePrefs: AppearancePreferences;
   onClose: () => void;
   onSaved: (profile: UserProfile) => void;
+  onNotificationPrefsChange: (preferences: NotificationPreferences) => void;
+  onAppearancePrefsChange: (preferences: AppearancePreferences) => void;
   onError: (error: string) => void;
 }) {
+  const [tab, setTab] = useState<"account" | "notifications" | "appearance">("account");
   const [displayName, setDisplayName] = useState(user.displayName);
   const [bio, setBio] = useState(user.bio);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(user.avatarUrl);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [username, setUsername] = useState(user.username);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -1375,7 +1693,18 @@ function SettingsModal({
         bio,
         avatarUrl: nextAvatarUrl
       });
-      onSaved(profile);
+
+      const accountChanged =
+        username.trim().toLowerCase() !== user.username || newPassword.trim().length > 0;
+      const updatedProfile = accountChanged
+        ? await api.updateAccount({
+            username: username.trim(),
+            currentPassword: currentPassword || undefined,
+            newPassword: newPassword || undefined
+          })
+        : profile;
+
+      onSaved({ ...profile, ...updatedProfile });
     } catch (requestError) {
       onError(getMessage(requestError));
     } finally {
@@ -1384,63 +1713,250 @@ function SettingsModal({
   };
 
   return (
-    <div className="modal-backdrop">
-      <form className="settings-modal" onSubmit={save}>
-        <header>
-          <h2>Settings</h2>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
-            <X size={19} />
-          </button>
-        </header>
+    <div className="settings-page">
+      <aside className="settings-nav">
+        <h2>Settings</h2>
+        <button className={tab === "account" ? "active" : ""} onClick={() => setTab("account")}>
+          <User size={17} />
+          My Account
+        </button>
+        <button className={tab === "notifications" ? "active" : ""} onClick={() => setTab("notifications")}>
+          <Bell size={17} />
+          Notifications
+        </button>
+        <button className={tab === "appearance" ? "active" : ""} onClick={() => setTab("appearance")}>
+          <Palette size={17} />
+          Appearance
+        </button>
+      </aside>
 
-        <div className="settings-grid">
-          <div className="settings-avatar">
-            <Avatar profile={previewProfile} size="xl" />
-            <input
-              ref={avatarInputRef}
-              hidden
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)}
+      <main className="settings-main">
+        <button className="settings-close" onClick={onClose} aria-label="Close settings">
+          <X size={24} />
+        </button>
+
+        {tab === "account" ? (
+          <form className="settings-section" onSubmit={save}>
+            <h1>My Account</h1>
+            <div className="settings-grid">
+              <div className="settings-avatar">
+                <Avatar profile={previewProfile} size="xl" />
+                <input
+                  ref={avatarInputRef}
+                  hidden
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)}
+                />
+                <button type="button" className="secondary-button" onClick={() => avatarInputRef.current?.click()}>
+                  <Upload size={16} />
+                  Upload
+                </button>
+                <button
+                  type="button"
+                  className="text-button subtle"
+                  onClick={() => {
+                    setAvatarFile(null);
+                    setAvatarUrl(null);
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+
+              <div className="settings-fields">
+                <label>
+                  Nickname
+                  <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+                </label>
+                <label>
+                  Username
+                  <input value={username} onChange={(event) => setUsername(event.target.value)} />
+                </label>
+                <label>
+                  About me
+                  <textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={190} />
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-card">
+              <h3>
+                <KeyRound size={17} />
+                Change Password
+              </h3>
+              <label>
+                Current password
+                <input
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  type="password"
+                  autoComplete="current-password"
+                />
+              </label>
+              <label>
+                New password
+                <input
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="8+ characters"
+                />
+              </label>
+            </div>
+
+            <footer className="settings-footer">
+              <button type="button" className="secondary-button" onClick={onClose}>
+                Cancel
+              </button>
+              <button className="primary-button" disabled={saving}>
+                {saving ? <Loader2 className="spin" size={17} /> : null}
+                Save
+              </button>
+            </footer>
+          </form>
+        ) : null}
+
+        {tab === "notifications" ? (
+          <section className="settings-section">
+            <h1>Notifications</h1>
+            <SettingsToggle
+              title="Mention popups"
+              description="Show a bottom-right popup when someone pings you."
+              checked={notificationPrefs.mentionToasts}
+              onChange={(checked) => onNotificationPrefsChange({ ...notificationPrefs, mentionToasts: checked })}
             />
-            <button type="button" className="secondary-button" onClick={() => avatarInputRef.current?.click()}>
-              <Upload size={16} />
-              Upload
-            </button>
-            <button
-              type="button"
-              className="text-button subtle"
-              onClick={() => {
-                setAvatarFile(null);
-                setAvatarUrl(null);
-              }}
-            >
-              Remove
-            </button>
-          </div>
+            <SettingsToggle
+              title="Mention sound"
+              description="Play an invasive ping sound when someone mentions you."
+              checked={notificationPrefs.mentionSound}
+              onChange={(checked) => onNotificationPrefsChange({ ...notificationPrefs, mentionSound: checked })}
+            />
+            <SettingsToggle
+              title="System notifications"
+              description="Ask the operating system to show a notification for mentions."
+              checked={notificationPrefs.desktopNotifications}
+              onChange={(checked) => onNotificationPrefsChange({ ...notificationPrefs, desktopNotifications: checked })}
+            />
+            <div className="settings-card">
+              <h3>
+                <Volume2 size={17} />
+                Sound
+              </h3>
+              <label>
+                Notification sound
+                <select
+                  value={notificationPrefs.sound}
+                  onChange={(event) =>
+                    onNotificationPrefsChange({
+                      ...notificationPrefs,
+                      sound: event.target.value as NotificationSound
+                    })
+                  }
+                >
+                  <option value="ping">Ping</option>
+                  <option value="chime">Chime</option>
+                  <option value="alert">Alert</option>
+                  <option value="none">None</option>
+                </select>
+              </label>
+              <label>
+                Volume
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={notificationPrefs.volume}
+                  onChange={(event) =>
+                    onNotificationPrefsChange({
+                      ...notificationPrefs,
+                      volume: Number(event.target.value)
+                    })
+                  }
+                />
+              </label>
+              <button
+                className="secondary-button"
+                onClick={() => playMentionSound(notificationPrefs)}
+                disabled={notificationPrefs.sound === "none"}
+              >
+                Test Sound
+              </button>
+            </div>
+          </section>
+        ) : null}
 
-          <div className="settings-fields">
-            <label>
-              Display name
-              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-            </label>
-            <label>
-              About me
-              <textarea value={bio} onChange={(event) => setBio(event.target.value)} maxLength={190} />
-            </label>
-          </div>
-        </div>
+        {tab === "appearance" ? (
+          <section className="settings-section">
+            <h1>Appearance</h1>
+            <div className="theme-grid">
+              {(["dark", "light", "midnight", "forest", "berry"] as ThemeName[]).map((theme) => (
+                <button
+                  className={`theme-tile theme-preview-${theme} ${appearancePrefs.theme === theme ? "active" : ""}`}
+                  key={theme}
+                  onClick={() => onAppearancePrefsChange({ theme })}
+                >
+                  <span />
+                  {themeLabel(theme)}
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </main>
+    </div>
+  );
+}
 
-        <footer>
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Cancel
+function SettingsToggle({
+  title,
+  description,
+  checked,
+  onChange
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="settings-toggle">
+      <span>
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </span>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    </label>
+  );
+}
+
+function ToastStack({
+  toasts,
+  onDismiss
+}: {
+  toasts: Array<{ id: string; message: MessageView }>;
+  onDismiss: (id: string) => void;
+}) {
+  if (toasts.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="toast-stack">
+      {toasts.map((toast) => (
+        <article className="mention-toast" key={toast.id}>
+          <Avatar profile={toast.message.author} size="sm" />
+          <div>
+            <strong>{toast.message.author.displayName} mentioned you</strong>
+            <p>{stripEventTokens(toast.message.content)}</p>
+          </div>
+          <button onClick={() => onDismiss(toast.id)} aria-label="Dismiss notification">
+            <X size={14} />
           </button>
-          <button className="primary-button" disabled={saving}>
-            {saving ? <Loader2 className="spin" size={17} /> : null}
-            Save
-          </button>
-        </footer>
-      </form>
+        </article>
+      ))}
     </div>
   );
 }
@@ -1655,6 +2171,61 @@ function applyProfileUpdate(session: Session, profile: UserProfile): Session {
   };
 }
 
+function upsertMessageInChannel(
+  current: Record<string, MessageView[]>,
+  message: MessageView
+): Record<string, MessageView[]> {
+  const channelMessages = current[message.channelId] ?? [];
+  const withoutTempDuplicate = channelMessages.filter(
+    (existing) =>
+      existing.id !== message.id &&
+      !(
+        existing.id.startsWith("temp-") &&
+        existing.author.id === message.author.id &&
+        existing.content === message.content
+      )
+  );
+
+  return {
+    ...current,
+    [message.channelId]: [...withoutTempDuplicate, message].sort(
+      (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)
+    )
+  };
+}
+
+function replaceMessageInChannel(
+  current: Record<string, MessageView[]>,
+  temporaryId: string,
+  message: MessageView
+): Record<string, MessageView[]> {
+  const channelMessages = current[message.channelId] ?? [];
+  const replaced = channelMessages.some((existing) => existing.id === temporaryId)
+    ? channelMessages.map((existing) => (existing.id === temporaryId ? message : existing))
+    : [...channelMessages, message];
+
+  return {
+    ...current,
+    [message.channelId]: replaced
+      .filter((existing, index, list) => list.findIndex((candidate) => candidate.id === existing.id) === index)
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+  };
+}
+
+function applyProfileUpdateToMessages(
+  messagesByChannel: Record<string, MessageView[]>,
+  profile: UserProfile
+): Record<string, MessageView[]> {
+  return Object.fromEntries(
+    Object.entries(messagesByChannel).map(([channelId, messages]) => [
+      channelId,
+      messages.map((message) =>
+        message.author.id === profile.id ? { ...message, author: profile } : message
+      )
+    ])
+  );
+}
+
 function applyProfileUpdateToCalendarEvents(
   events: CalendarEventView[],
   profile: UserProfile
@@ -1680,15 +2251,81 @@ function upsertCalendarEvent(
 }
 
 function emitMessage(socket: ChatSocket, payload: { channelId: string } & CreateMessageRequest) {
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<MessageView>((resolve, reject) => {
     socket.emit("message:create", payload, (response) => {
       if (response.ok) {
-        resolve();
+        resolve(response.message);
       } else {
         reject(new Error(response.error));
       }
     });
   });
+}
+
+function renderMessageText(
+  content: string,
+  members: ServerMemberView[],
+  onProfile: (profile: UserProfile) => void
+) {
+  if (!content.trim()) {
+    return null;
+  }
+
+  const parts = content.split(/(@[a-zA-Z0-9_.-]+)/g);
+
+  return (
+    <p>
+      {parts.map((part, index) => {
+        if (!part.startsWith("@")) {
+          return <span key={`${part}-${index}`}>{part}</span>;
+        }
+
+        const username = part.slice(1).toLowerCase();
+        const member = members.find((candidate) => candidate.username.toLowerCase() === username);
+
+        if (!member) {
+          return <span key={`${part}-${index}`}>{part}</span>;
+        }
+
+        return (
+          <button
+            className="mention-pill"
+            key={`${part}-${index}`}
+            type="button"
+            onClick={() => onProfile(member)}
+          >
+            @{member.displayName}
+          </button>
+        );
+      })}
+    </p>
+  );
+}
+
+function getMentionQuery(value: string) {
+  const match = value.match(/(?:^|\s)@([a-zA-Z0-9_.-]*)$/);
+  return match?.[1] ?? null;
+}
+
+function replaceMentionQuery(value: string, username: string) {
+  return value.replace(/(?:^|\s)@([a-zA-Z0-9_.-]*)$/, (match) => {
+    const prefix = match.startsWith(" ") ? " " : "";
+    return `${prefix}@${username} `;
+  });
+}
+
+function createEventToken(eventId: string) {
+  return `[[gc-event:${eventId}]]`;
+}
+
+function extractEventIds(content: string) {
+  return [...content.matchAll(eventTokenPattern)]
+    .map((match) => match[1])
+    .filter((eventId): eventId is string => Boolean(eventId));
+}
+
+function stripEventTokens(content: string) {
+  return content.replace(eventTokenPattern, "").trim();
 }
 
 function buildCalendarDays(visibleMonth: Date, events: CalendarEventView[]) {
@@ -1755,6 +2392,116 @@ function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {
   };
 
   return rank[role] >= rank[minimum];
+}
+
+function loadNotificationPreferences(): NotificationPreferences {
+  return {
+    mentionToasts: true,
+    mentionSound: true,
+    desktopNotifications: true,
+    sound: "ping",
+    volume: 0.85,
+    ...readJson<Partial<NotificationPreferences>>(notificationStorageKey)
+  };
+}
+
+function loadAppearancePreferences(): AppearancePreferences {
+  return {
+    theme: "dark",
+    ...readJson<Partial<AppearancePreferences>>(appearanceStorageKey)
+  };
+}
+
+function readJson<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldNotifyMention(preferences: NotificationPreferences) {
+  return preferences.mentionToasts || preferences.mentionSound || preferences.desktopNotifications;
+}
+
+function messageMentionsUser(content: string, user: UserProfile) {
+  const mentions: string[] = content.toLowerCase().match(/@[a-z0-9_.-]+/g) ?? [];
+  return mentions.includes(`@${user.username.toLowerCase()}`);
+}
+
+function showMentionNotification(
+  message: MessageView,
+  preferences: NotificationPreferences,
+  setToasts: Dispatch<SetStateAction<Array<{ id: string; message: MessageView }>>>
+) {
+  if (preferences.mentionSound) {
+    playMentionSound(preferences);
+  }
+
+  if (preferences.mentionToasts) {
+    const id = crypto.randomUUID();
+    setToasts((current) => [...current, { id, message }].slice(-4));
+    setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 6500);
+  }
+
+  if (preferences.desktopNotifications && "Notification" in window) {
+    if (Notification.permission === "granted") {
+      new Notification(`${message.author.displayName} mentioned you`, {
+        body: stripEventTokens(message.content).slice(0, 120)
+      });
+    } else if (Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
+  }
+}
+
+function playMentionSound(preferences: NotificationPreferences) {
+  if (!preferences.mentionSound || preferences.sound === "none" || preferences.volume <= 0) {
+    return;
+  }
+
+  const AudioContextClass =
+    window.AudioContext ??
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextClass) {
+    return;
+  }
+  const context = new AudioContextClass();
+  const gain = context.createGain();
+  gain.gain.value = Math.min(Math.max(preferences.volume, 0), 1);
+  gain.connect(context.destination);
+
+  const frequencies =
+    preferences.sound === "chime"
+      ? [660, 880]
+      : preferences.sound === "alert"
+        ? [880, 660, 880]
+        : [1046, 1318];
+
+  frequencies.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    oscillator.type = preferences.sound === "alert" ? "square" : "sine";
+    oscillator.frequency.value = frequency;
+    oscillator.connect(gain);
+    const start = context.currentTime + index * 0.12;
+    oscillator.start(start);
+    oscillator.stop(start + 0.1);
+  });
+
+  setTimeout(() => void context.close(), 600);
+}
+
+function themeLabel(theme: ThemeName) {
+  return {
+    dark: "Dark",
+    light: "Light",
+    midnight: "Midnight",
+    forest: "Forest",
+    berry: "Berry"
+  }[theme];
 }
 
 function formatTime(value: string) {

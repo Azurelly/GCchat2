@@ -13,6 +13,7 @@ import {
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
+  type UpdateAccountRequest,
   type UpdateUserBanRequest,
   type UpdateProfileRequest,
   type UpdateUserRoleRequest,
@@ -121,6 +122,14 @@ export class InMemoryChatRepository implements ChatRepository {
 
   public async findUserAuthByUsername(username: string): Promise<UserAuthRecord | null> {
     const user = [...this.users.values()].find((candidate) => candidate.username === username);
+    return this.mapAuthRecord(user ?? null);
+  }
+
+  public async findUserAuthById(userId: string): Promise<UserAuthRecord | null> {
+    return this.mapAuthRecord(this.users.get(userId) ?? null);
+  }
+
+  private mapAuthRecord(user: StoredUser | null): UserAuthRecord | null {
     return user
       ? {
           id: user.id,
@@ -173,6 +182,27 @@ export class InMemoryChatRepository implements ChatRepository {
       bio: input.bio ?? profile.bio,
       avatarUrl: input.avatarUrl === undefined ? profile.avatarUrl : input.avatarUrl
     });
+
+    return this.mapUser(user);
+  }
+
+  public async updateAccount(
+    userId: string,
+    input: Omit<UpdateAccountRequest, "currentPassword"> & { passwordHash?: string }
+  ): Promise<UserProfile> {
+    const user = this.users.get(userId);
+
+    if (!user) {
+      throw new HttpError(404, "User not found");
+    }
+
+    if (input.username) {
+      user.username = input.username;
+    }
+
+    if (input.passwordHash) {
+      user.passwordHash = input.passwordHash;
+    }
 
     return this.mapUser(user);
   }

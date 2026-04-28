@@ -16,7 +16,21 @@ export interface AssetStorage {
   upload(kind: UploadKind, file: UploadFile): Promise<UploadResponse>;
 }
 
-const allowedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const allowedAvatarMimeTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const allowedAttachmentMimeTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+  "text/plain",
+  "text/csv",
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+]);
 const maxFileSize = 10 * 1024 * 1024;
 
 export class SupabaseAssetStorage implements AssetStorage {
@@ -33,7 +47,7 @@ export class SupabaseAssetStorage implements AssetStorage {
   }
 
   public async upload(kind: UploadKind, file: UploadFile): Promise<UploadResponse> {
-    validateImage(file);
+    validateUpload(kind, file);
 
     const bucket =
       kind === "avatar" ? this.env.supabaseAvatarsBucket : this.env.supabaseAttachmentsBucket;
@@ -45,7 +59,7 @@ export class SupabaseAssetStorage implements AssetStorage {
     });
 
     if (error) {
-      throw new HttpError(502, "Could not upload image", error.message);
+      throw new HttpError(502, "Could not upload file", error.message);
     }
 
     const { data } = this.client.storage.from(bucket).getPublicUrl(objectPath);
@@ -68,7 +82,7 @@ export class DisabledAssetStorage implements AssetStorage {
 
 export class MemoryAssetStorage implements AssetStorage {
   public async upload(kind: UploadKind, file: UploadFile): Promise<UploadResponse> {
-    validateImage(file);
+    validateUpload(kind, file);
 
     return {
       url: `https://assets.local/${kind}/${randomUUID()}-${sanitizeFileName(file.originalName)}`,
@@ -88,13 +102,20 @@ export function createAssetStorage(env: ServerEnv): AssetStorage {
   return new SupabaseAssetStorage(env);
 }
 
-function validateImage(file: UploadFile) {
+function validateUpload(kind: UploadKind, file: UploadFile) {
+  const allowedMimeTypes = kind === "avatar" ? allowedAvatarMimeTypes : allowedAttachmentMimeTypes;
+
   if (!allowedMimeTypes.has(file.mimeType)) {
-    throw new HttpError(400, "Only JPG, PNG, WebP, and GIF images are supported");
+    throw new HttpError(
+      400,
+      kind === "avatar"
+        ? "Only JPG, PNG, WebP, and GIF images are supported"
+        : "This file type is not supported yet"
+    );
   }
 
   if (file.size > maxFileSize) {
-    throw new HttpError(400, "Images must be 10 MB or smaller");
+    throw new HttpError(400, "Files must be 10 MB or smaller");
   }
 }
 
