@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, autoUpdater, BrowserWindow, ipcMain, Menu, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, ipcMain, Menu, session, shell } from "electron";
 import started from "electron-squirrel-startup";
 import releaseConfig from "../../../release.config.json";
 
@@ -67,6 +67,9 @@ const createWindow = () => {
 app.on("ready", createWindow);
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === "media");
+  });
   setupAutoUpdates();
 });
 

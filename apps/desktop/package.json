@@ -1,6 +1,6 @@
 {
   "name": "@gcchat/desktop",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "productName": "GCChat",
   "author": "GCChat",
   "description": "A Discord-inspired messaging app.",
@@ -17,6 +17,7 @@
   "dependencies": {
     "@gcchat/shared": "workspace:*",
     "electron-squirrel-startup": "^1.0.1",
+    "livekit-client": "^2.18.7",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

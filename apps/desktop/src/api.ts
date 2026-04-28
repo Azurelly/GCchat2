@@ -22,7 +22,8 @@ import type {
   UpdateUserRoleRequest,
   UploadKind,
   UploadResponse,
-  UserProfile
+  UserProfile,
+  VoiceTokenResponse
 } from "@gcchat/shared";
 
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4197";
@@ -126,6 +127,13 @@ export class ApiClient {
     return this.request<MessageView>(`/messages/${messageId}/reactions`, {
       method: "POST",
       body: JSON.stringify(input)
+    });
+  }
+
+  public createVoiceToken() {
+    return this.request<VoiceTokenResponse>("/voice/token", {
+      method: "POST",
+      body: JSON.stringify({})
     });
   }
 

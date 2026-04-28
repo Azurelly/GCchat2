@@ -2,6 +2,7 @@ import {
   type Dispatch,
   type ReactNode,
   type SetStateAction,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -27,7 +28,11 @@ import {
   Loader2,
   LogOut,
   MessageCircle,
+  Mic,
+  MicOff,
   Minus,
+  PhoneCall,
+  PhoneOff,
   Plus,
   Palette,
   Paperclip,
@@ -50,6 +55,15 @@ import {
   Users,
   X
 } from "lucide-react";
+import {
+  Room,
+  RoomEvent,
+  Track,
+  type Participant,
+  type RemoteParticipant,
+  type RemoteTrack,
+  type RemoteTrackPublication
+} from "livekit-client";
 import { io, type Socket } from "socket.io-client";
 import type {
   AuthResponse,
@@ -112,6 +126,7 @@ type ThemeName = "dark" | "light" | "midnight" | "forest" | "berry";
 type NotificationSound = "ping" | "chime" | "alert" | "none";
 type DefaultEmoji = (typeof defaultEmojis)[number];
 type CalendarEventsStatus = "idle" | "loading" | "ready" | "error";
+type VoiceStatus = "idle" | "connecting" | "connected" | "error";
 
 interface NotificationPreferences {
   mentionToasts: boolean;
@@ -127,6 +142,15 @@ interface AppearancePreferences {
 
 interface Session extends BootstrapPayload {
   token: string;
+}
+
+interface VoiceParticipantView {
+  identity: string;
+  name: string;
+  isLocal: boolean;
+  isMuted: boolean;
+  isSpeaking: boolean;
+  profile: UserProfile | null;
 }
 
 const api = new ApiClient();
@@ -158,6 +182,11 @@ export function App() {
   const [toasts, setToasts] = useState<Array<{ id: string; message: MessageView }>>([]);
   const [socket, setSocket] = useState<ChatSocket | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
+  const [voiceParticipants, setVoiceParticipants] = useState<VoiceParticipantView[]>([]);
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const voiceRoomRef = useRef<Room | null>(null);
+  const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
   const activeChannel = useMemo(() => {
     if (!session) {
       return null;
@@ -234,9 +263,161 @@ export function App() {
     localStorage.setItem(appearanceStorageKey, JSON.stringify(appearancePrefs));
   }, [appearancePrefs]);
 
+  const clearVoiceAudio = useCallback(() => {
+    for (const element of voiceAudioElementsRef.current) {
+      element.remove();
+    }
+
+    voiceAudioElementsRef.current.clear();
+  }, []);
+
+  const syncVoiceParticipants = useCallback(
+    (room: Room | null) => {
+      if (!room || !session) {
+        setVoiceParticipants([]);
+        return;
+      }
+
+      const participants: Participant[] = [
+        room.localParticipant,
+        ...Array.from(room.remoteParticipants.values())
+      ];
+
+      setVoiceParticipants(
+        participants.map((participant) => {
+          const profile =
+            session.user.id === participant.identity
+              ? session.user
+              : session.members.find((member) => member.id === participant.identity) ?? null;
+
+          return {
+            identity: participant.identity,
+            name: profile?.displayName ?? participant.name ?? participant.identity,
+            isLocal: participant.identity === room.localParticipant.identity,
+            isMuted: isParticipantAudioMuted(participant),
+            isSpeaking: participant.isSpeaking,
+            profile
+          };
+        })
+      );
+    },
+    [session]
+  );
+
+  const disconnectVoice = useCallback(() => {
+    voiceRoomRef.current?.disconnect();
+    voiceRoomRef.current = null;
+    clearVoiceAudio();
+    setVoiceStatus("idle");
+    setVoiceParticipants([]);
+    setVoiceMuted(false);
+  }, [clearVoiceAudio]);
+
+  const handleVoiceJoin = async () => {
+    if (voiceStatus === "connecting" || voiceRoomRef.current) {
+      return;
+    }
+
+    let room: Room | null = null;
+    setVoiceStatus("connecting");
+    setError(null);
+
+    try {
+      const credentials = await api.createVoiceToken();
+      room = new Room({ adaptiveStream: true, dynacast: true });
+
+      const attachAudio = (track: RemoteTrack) => {
+        if (track.kind !== Track.Kind.Audio) {
+          return;
+        }
+
+        const element = track.attach();
+        element.autoplay = true;
+        element.setAttribute("playsinline", "true");
+        element.style.display = "none";
+        document.body.appendChild(element);
+        voiceAudioElementsRef.current.add(element);
+      };
+
+      const detachAudio = (track: RemoteTrack) => {
+        for (const element of track.detach()) {
+          element.remove();
+          voiceAudioElementsRef.current.delete(element);
+        }
+      };
+
+      const sync = () => syncVoiceParticipants(room);
+
+      room.on(RoomEvent.ParticipantConnected, sync);
+      room.on(RoomEvent.ParticipantDisconnected, sync);
+      room.on(RoomEvent.ActiveSpeakersChanged, sync);
+      room.on(RoomEvent.TrackMuted, sync);
+      room.on(RoomEvent.TrackUnmuted, sync);
+      room.on(
+        RoomEvent.TrackSubscribed,
+        (track: RemoteTrack, _publication: RemoteTrackPublication, _participant: RemoteParticipant) => {
+          attachAudio(track);
+          sync();
+        }
+      );
+      room.on(
+        RoomEvent.TrackUnsubscribed,
+        (track: RemoteTrack, _publication: RemoteTrackPublication, _participant: RemoteParticipant) => {
+          detachAudio(track);
+          sync();
+        }
+      );
+      room.on(RoomEvent.Disconnected, () => {
+        clearVoiceAudio();
+        voiceRoomRef.current = null;
+        setVoiceStatus("idle");
+        setVoiceParticipants([]);
+        setVoiceMuted(false);
+      });
+
+      await room.connect(credentials.url, credentials.token, { autoSubscribe: true });
+      await room.localParticipant.setMicrophoneEnabled(true);
+      voiceRoomRef.current = room;
+      setVoiceStatus("connected");
+      setVoiceMuted(false);
+      syncVoiceParticipants(room);
+    } catch (requestError) {
+      room?.disconnect();
+      clearVoiceAudio();
+      setVoiceStatus("error");
+      setError(getMessage(requestError));
+    }
+  };
+
+  const handleVoiceMuteToggle = async () => {
+    const room = voiceRoomRef.current;
+
+    if (!room || voiceStatus !== "connected") {
+      return;
+    }
+
+    try {
+      const nextMuted = !voiceMuted;
+      await room.localParticipant.setMicrophoneEnabled(!nextMuted);
+      setVoiceMuted(nextMuted);
+      syncVoiceParticipants(room);
+    } catch (requestError) {
+      setError(getMessage(requestError));
+    }
+  };
+
+  useEffect(() => {
+    return () => disconnectVoice();
+  }, [disconnectVoice]);
+
+  useEffect(() => {
+    syncVoiceParticipants(voiceRoomRef.current);
+  }, [session?.members, session?.user, syncVoiceParticipants]);
+
   const enterBannedState = () => {
     localStorage.removeItem(tokenStorageKey);
     api.setToken(null);
+    disconnectVoice();
     socketRef.current?.disconnect();
     setBanned(true);
     setSession(null);
@@ -251,6 +432,7 @@ export function App() {
 
   useEffect(() => {
     if (!session) {
+      disconnectVoice();
       socketRef.current?.disconnect();
       socketRef.current = null;
       setSocket(null);
@@ -452,6 +634,7 @@ export function App() {
   const handleLogout = () => {
     localStorage.removeItem(tokenStorageKey);
     api.setToken(null);
+    disconnectVoice();
     socketRef.current?.disconnect();
     setSession(null);
     setActiveChannelId(null);
@@ -670,6 +853,13 @@ export function App() {
           onSettings={() => setSettingsOpen(true)}
           onLogout={handleLogout}
           onError={setError}
+          voiceStatus={voiceStatus}
+          voiceMuted={voiceMuted}
+          voiceParticipants={voiceParticipants}
+          onVoiceJoin={() => void handleVoiceJoin()}
+          onVoiceLeave={disconnectVoice}
+          onVoiceMuteToggle={() => void handleVoiceMuteToggle()}
+          onVoiceProfile={setSelectedProfile}
         />
       ) : null}
 
@@ -995,7 +1185,14 @@ function ChannelSidebar({
   onProfile,
   onSettings,
   onLogout,
-  onError
+  onError,
+  voiceStatus,
+  voiceMuted,
+  voiceParticipants,
+  onVoiceJoin,
+  onVoiceLeave,
+  onVoiceMuteToggle,
+  onVoiceProfile
 }: {
   session: Session;
   activeChannelId: string;
@@ -1006,6 +1203,13 @@ function ChannelSidebar({
   onSettings: () => void;
   onLogout: () => void;
   onError: (error: string | null) => void;
+  voiceStatus: VoiceStatus;
+  voiceMuted: boolean;
+  voiceParticipants: VoiceParticipantView[];
+  onVoiceJoin: () => void;
+  onVoiceLeave: () => void;
+  onVoiceMuteToggle: () => void;
+  onVoiceProfile: (profile: UserProfile) => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -1095,6 +1299,16 @@ function ChannelSidebar({
             </div>
           ))}
         </div>
+
+        <VoiceChannelSection
+          status={voiceStatus}
+          muted={voiceMuted}
+          participants={voiceParticipants}
+          onJoin={onVoiceJoin}
+          onLeave={onVoiceLeave}
+          onToggleMute={onVoiceMuteToggle}
+          onProfile={onVoiceProfile}
+        />
       </div>
 
       <div className="user-panel">
@@ -1113,6 +1327,96 @@ function ChannelSidebar({
         </button>
       </div>
     </aside>
+  );
+}
+
+function VoiceChannelSection({
+  status,
+  muted,
+  participants,
+  onJoin,
+  onLeave,
+  onToggleMute,
+  onProfile
+}: {
+  status: VoiceStatus;
+  muted: boolean;
+  participants: VoiceParticipantView[];
+  onJoin: () => void;
+  onLeave: () => void;
+  onToggleMute: () => void;
+  onProfile: (profile: UserProfile) => void;
+}) {
+  const connected = status === "connected";
+  const connecting = status === "connecting";
+
+  return (
+    <section className="voice-channel-section">
+      <div className="channel-group-title voice-title">Voice Channels</div>
+      <button
+        className={`channel-link voice-channel-link ${connected ? "active" : ""}`}
+        onClick={connected ? undefined : onJoin}
+        disabled={connecting}
+        type="button"
+      >
+        {connecting ? <Loader2 className="spin" size={18} /> : <Volume2 size={18} />}
+        <span>General Voice</span>
+      </button>
+
+      {connected || connecting ? (
+        <div className="voice-connection-card">
+          <div className="voice-status-row">
+            <PhoneCall size={15} />
+            <span>{connecting ? "Connecting..." : "Voice Connected"}</span>
+          </div>
+
+          {participants.length > 0 ? (
+            <div className="voice-participant-list">
+              {participants.map((participant) => (
+                <button
+                  className={`voice-participant ${participant.isSpeaking ? "speaking" : ""}`}
+                  key={participant.identity}
+                  type="button"
+                  disabled={!participant.profile}
+                  onClick={() => participant.profile && onProfile(participant.profile)}
+                  title={participant.isLocal ? "You" : participant.name}
+                >
+                  {participant.profile ? (
+                    <Avatar profile={participant.profile} size="xs" />
+                  ) : (
+                    <span className="voice-fallback-avatar">{participant.name.slice(0, 2).toUpperCase()}</span>
+                  )}
+                  <span>{participant.isLocal ? `${participant.name} (you)` : participant.name}</span>
+                  {participant.isMuted ? <MicOff size={13} /> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="voice-controls">
+            <button
+              className={`voice-control-button ${muted ? "danger" : ""}`}
+              type="button"
+              onClick={onToggleMute}
+              disabled={!connected}
+              title={muted ? "Unmute microphone" : "Mute microphone"}
+            >
+              {muted ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
+            <button
+              className="voice-control-button danger"
+              type="button"
+              onClick={onLeave}
+              title="Disconnect"
+            >
+              <PhoneOff size={16} />
+            </button>
+          </div>
+        </div>
+      ) : status === "error" ? (
+        <p className="voice-error">Voice is not available.</p>
+      ) : null}
+    </section>
   );
 }
 
@@ -3668,6 +3972,16 @@ function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {
 
 function canDeleteCalendarEvent(event: CalendarEventView, user: UserProfile) {
   return event.creator.id === user.id || hasAtLeastRole(user.role, "ADMIN");
+}
+
+function isParticipantAudioMuted(participant: Participant) {
+  const publications = Array.from(participant.audioTrackPublications.values());
+
+  if (publications.length === 0) {
+    return true;
+  }
+
+  return publications.every((publication) => publication.isMuted);
 }
 
 function shouldCompactMessage(previous: MessageView | null, message: MessageView) {

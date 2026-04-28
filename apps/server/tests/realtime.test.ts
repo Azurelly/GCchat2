@@ -13,7 +13,8 @@ const env: ServerEnv = {
   clientOrigin: "http://localhost:5173",
   jwtSecret: "test-secret",
   supabaseAvatarsBucket: "avatars",
-  supabaseAttachmentsBucket: "message-attachments"
+  supabaseAttachmentsBucket: "message-attachments",
+  livekitRoomName: "gcchat-general-voice"
 };
 
 let clients: Socket[] = [];

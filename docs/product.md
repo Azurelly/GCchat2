@@ -5,6 +5,7 @@ GCChat is a private social hub for a large friend group. It is not meant to beco
 The left rail is feature navigation for the shared group hub:
 
 - Chat: the main place for channels, messages, profiles, and realtime conversation.
+- General Voice: a single shared LiveKit-powered voice channel inside the Chat feature.
 - GC calendar: shared friend-group events such as birthdays, food plans, hangouts, trips, and other important dates.
 - Emoji Studio: admin-only custom emoji creation and management for friend-group inside jokes and shared reactions.
 - Future feature tabs may include polls, planning tools, media, memories, or other group-specific experiences.
@@ -32,3 +33,10 @@ Emoji behavior:
 - Custom emojis are represented as `:emoji_name:` tokens and render as inline images.
 - Admins and Super Admins can create, rename, replace, and delete custom emojis in Emoji Studio.
 - Emoji Studio shows who created each emoji and how many times it has been used in messages.
+
+Voice MVP behavior:
+
+- Users can join one shared `General Voice` channel from the Chat sidebar.
+- LiveKit Cloud hosts the realtime audio room.
+- The GCChat server mints short-lived voice tokens after normal app authentication.
+- Users can mute/unmute their microphone and disconnect from the voice channel.

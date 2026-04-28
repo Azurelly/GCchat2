@@ -10,12 +10,13 @@ const env: ServerEnv = {
   clientOrigin: "http://localhost:5173",
   jwtSecret: "test-secret",
   supabaseAvatarsBucket: "avatars",
-  supabaseAttachmentsBucket: "message-attachments"
+  supabaseAttachmentsBucket: "message-attachments",
+  livekitRoomName: "gcchat-general-voice"
 };
 
-function makeApp() {
+function makeApp(overrides: Partial<ServerEnv> = {}) {
   const repo = new InMemoryChatRepository();
-  const app = createApp({ env, repo, storage: new MemoryAssetStorage() });
+  const app = createApp({ env: { ...env, ...overrides }, repo, storage: new MemoryAssetStorage() });
   return { app, repo };
 }
 
@@ -200,6 +201,31 @@ describe("messages API", () => {
       .expect(200);
 
     expect(removed.body.reactions).toEqual([]);
+  });
+});
+
+describe("voice API", () => {
+  it("generates a LiveKit join token for active users", async () => {
+    const { app } = makeApp({
+      livekitWsUrl: "wss://gcchat-test.livekit.cloud",
+      livekitApiKey: "test-key",
+      livekitApiSecret: "test-secret"
+    });
+    const registered = await request(app)
+      .post("/auth/register")
+      .send({ username: "VoiceUser", password: "password123" })
+      .expect(201);
+
+    const voice = await request(app)
+      .post("/voice/token")
+      .set("authorization", `Bearer ${registered.body.token}`)
+      .send({})
+      .expect(200);
+
+    expect(voice.body.url).toBe("wss://gcchat-test.livekit.cloud");
+    expect(voice.body.roomName).toBe("gcchat-general-voice");
+    expect(voice.body.identity).toBe(registered.body.user.id);
+    expect(voice.body.token).toEqual(expect.any(String));
   });
 });
 

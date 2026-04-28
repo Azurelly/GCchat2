@@ -143,6 +143,13 @@ export interface UploadResponse {
   kind: UploadKind;
 }
 
+export interface VoiceTokenResponse {
+  token: string;
+  url: string;
+  roomName: string;
+  identity: string;
+}
+
 export interface RegisterRequest {
   username: string;
   password: string;

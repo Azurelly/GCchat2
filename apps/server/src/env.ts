@@ -12,6 +12,10 @@ export interface ServerEnv {
   supabaseServiceRoleKey?: string;
   supabaseAvatarsBucket: string;
   supabaseAttachmentsBucket: string;
+  livekitWsUrl?: string;
+  livekitApiKey?: string;
+  livekitApiSecret?: string;
+  livekitRoomName: string;
 }
 
 export function loadEnv(): ServerEnv {
@@ -29,6 +33,10 @@ export function loadEnv(): ServerEnv {
     supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
     supabaseAvatarsBucket: process.env.SUPABASE_AVATARS_BUCKET ?? "avatars",
     supabaseAttachmentsBucket:
-      process.env.SUPABASE_ATTACHMENTS_BUCKET ?? "message-attachments"
+      process.env.SUPABASE_ATTACHMENTS_BUCKET ?? "message-attachments",
+    livekitWsUrl: process.env.LIVEKIT_WS_URL,
+    livekitApiKey: process.env.LIVEKIT_API_KEY,
+    livekitApiSecret: process.env.LIVEKIT_API_SECRET,
+    livekitRoomName: process.env.LIVEKIT_ROOM_NAME ?? "gcchat-general-voice"
   };
 }

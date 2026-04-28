@@ -22,9 +22,22 @@ Current production backend:
 https://gcchatserver-production.up.railway.app
 ```
 
+## Voice Chat
+
+Voice uses LiveKit Cloud. GCChat's Railway server is only responsible for authenticating the user and minting short-lived LiveKit room tokens; the desktop client connects directly to LiveKit Cloud for media. Never expose `LIVEKIT_API_SECRET` to the desktop app, GitHub Actions renderer variables, or committed files.
+
+Railway `@gcchat/server` must include:
+
+- `LIVEKIT_WS_URL`, the LiveKit Cloud WebSocket URL such as `wss://your-project.livekit.cloud`.
+- `LIVEKIT_API_KEY`.
+- `LIVEKIT_API_SECRET`.
+- `LIVEKIT_ROOM_NAME`, currently `gcchat-general-voice`.
+
+The MVP voice UX is a single shared voice channel in the chat tab named `General Voice`. If future work adds more voice channels, keep them inside the chat feature's channel list rather than treating them as separate hub features.
+
 Where settings belong:
 
-- Railway `@gcchat/server` variables: `DATABASE_URL`, `DIRECT_URL`, `JWT_SECRET`, `CLIENT_ORIGIN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AVATARS_BUCKET`, `SUPABASE_ATTACHMENTS_BUCKET`.
+- Railway `@gcchat/server` variables: `DATABASE_URL`, `DIRECT_URL`, `JWT_SECRET`, `CLIENT_ORIGIN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AVATARS_BUCKET`, `SUPABASE_ATTACHMENTS_BUCKET`, `LIVEKIT_WS_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_ROOM_NAME`.
 - GitHub repo Actions variable: `VITE_API_URL=https://gcchatserver-production.up.railway.app`.
 - Do not put `VITE_API_URL` on Railway unless it is needed for a separate Railway build; the release workflow injects it into the Electron renderer build.
 

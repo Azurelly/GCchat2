@@ -496,6 +496,137 @@ select:focus {
   color: #f2f3f5;
 }
 
+.voice-channel-section {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.voice-title {
+  padding-top: 4px;
+}
+
+.voice-channel-link {
+  justify-content: flex-start;
+}
+
+.voice-channel-link:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.voice-connection-card {
+  display: grid;
+  gap: 8px;
+  border-radius: 6px;
+  margin: 4px 4px 0;
+  padding: 10px;
+  color: #b5bac1;
+  background: #232428;
+}
+
+.voice-status-row,
+.voice-controls,
+.voice-participant {
+  display: flex;
+  align-items: center;
+}
+
+.voice-status-row {
+  gap: 7px;
+  color: #23a559;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.voice-participant-list {
+  display: grid;
+  gap: 2px;
+}
+
+.voice-participant {
+  min-width: 0;
+  height: 28px;
+  gap: 7px;
+  border-radius: 4px;
+  padding: 0 6px;
+  color: #b5bac1;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.voice-participant:hover,
+.voice-participant.speaking {
+  color: #f2f3f5;
+  background: #35373c;
+}
+
+.voice-participant span:not(.avatar):not(.voice-fallback-avatar) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-participant svg {
+  margin-left: auto;
+  color: #949ba4;
+}
+
+.voice-fallback-avatar {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #5865f2;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.voice-controls {
+  gap: 6px;
+}
+
+.voice-control-button {
+  width: 34px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: #dbdee1;
+  background: #35373c;
+  cursor: pointer;
+}
+
+.voice-control-button:hover {
+  color: #fff;
+  background: #4e5058;
+}
+
+.voice-control-button.danger {
+  color: #ffb4b6;
+}
+
+.voice-control-button.danger:hover {
+  color: #fff;
+  background: #da373c;
+}
+
+.voice-control-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.voice-error {
+  margin: 2px 8px 0;
+  color: #ffb4b6;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .user-panel {
   min-height: 54px;
   align-self: end;

@@ -1,5 +1,6 @@
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { AccessToken } from "livekit-server-sdk";
 import multer from "multer";
 import type {
   ChannelSummary,
@@ -10,7 +11,8 @@ import type {
   ServerMemberView,
   UpdateProfileRequest,
   UploadKind,
-  UserProfile
+  UserProfile,
+  VoiceTokenResponse
 } from "@gcchat/shared";
 import {
   hashPassword,
@@ -196,6 +198,46 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
       }
 
       res.json(profile);
+    })
+  );
+
+  app.post(
+    "/voice/token",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+
+      if (!env.livekitWsUrl || !env.livekitApiKey || !env.livekitApiSecret) {
+        throw new HttpError(503, "Voice is not configured yet");
+      }
+
+      const profile = await repo.getProfile(user.id);
+
+      if (!profile) {
+        throw new HttpError(401, "Invalid or expired session");
+      }
+
+      const accessToken = new AccessToken(env.livekitApiKey, env.livekitApiSecret, {
+        identity: user.id,
+        name: profile.displayName,
+        ttl: "1h"
+      });
+
+      accessToken.addGrant({
+        room: env.livekitRoomName,
+        roomJoin: true,
+        canPublish: true,
+        canPublishData: true,
+        canSubscribe: true
+      });
+
+      const response: VoiceTokenResponse = {
+        token: await accessToken.toJwt(),
+        url: env.livekitWsUrl,
+        roomName: env.livekitRoomName,
+        identity: user.id
+      };
+
+      res.json(response);
     })
   );
 
