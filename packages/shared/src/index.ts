@@ -51,6 +51,22 @@ export interface MessageView {
   attachments: AttachmentView[];
 }
 
+export interface CalendarEventOptInView {
+  user: UserProfile;
+  createdAt: string;
+}
+
+export interface CalendarEventView {
+  id: string;
+  title: string;
+  description: string;
+  startAt: string;
+  createdAt: string;
+  creator: UserProfile;
+  optIns: CalendarEventOptInView[];
+  viewerOptedIn: boolean;
+}
+
 export interface BootstrapPayload {
   user: UserProfile;
   server: ServerSummary;
@@ -96,6 +112,16 @@ export interface CreateMessageRequest {
   }>;
 }
 
+export interface CreateCalendarEventRequest {
+  title: string;
+  description?: string;
+  startAt: string;
+}
+
+export interface SetCalendarEventOptInRequest {
+  optedIn: boolean;
+}
+
 export interface ClientToServerEvents {
   "channel:join": (
     payload: { channelId: string },
@@ -111,4 +137,5 @@ export interface ServerToClientEvents {
   "message:new": (message: MessageView) => void;
   "profile:updated": (profile: UserProfile) => void;
   "members:updated": (members: ServerMemberView[]) => void;
+  "calendar:event:upsert": (event: CalendarEventView) => void;
 }

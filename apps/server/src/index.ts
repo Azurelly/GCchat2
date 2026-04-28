@@ -13,7 +13,8 @@ const storage = createAssetStorage(env);
 const realtime: RealtimePublisher = {
   emitMessage: () => undefined,
   emitProfileUpdated: () => undefined,
-  emitMembersUpdated: () => undefined
+  emitMembersUpdated: () => undefined,
+  emitCalendarEvent: () => undefined
 };
 
 const app = createApp({ env, repo, storage, realtime });

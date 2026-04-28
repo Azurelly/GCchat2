@@ -3,9 +3,12 @@ import {
   GLOBAL_CHANNEL_NAME,
   GLOBAL_SERVER_NAME,
   type BootstrapPayload,
+  type CalendarEventView,
   type ChannelSummary,
+  type CreateCalendarEventRequest,
   type CreateMessageRequest,
   type MessageView,
+  type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
   type UpdateProfileRequest,
@@ -53,6 +56,16 @@ interface StoredMessage {
   }>;
 }
 
+interface StoredCalendarEvent {
+  id: string;
+  creatorId: string;
+  title: string;
+  description: string;
+  startAt: Date;
+  createdAt: Date;
+  optInUserIds: Set<string>;
+}
+
 export class InMemoryChatRepository implements ChatRepository {
   private readonly server: ServerSummary = {
     id: "server-global",
@@ -70,6 +83,7 @@ export class InMemoryChatRepository implements ChatRepository {
   private readonly profiles = new Map<string, StoredProfile>();
   private readonly memberships: StoredMembership[] = [];
   private readonly messages: StoredMessage[] = [];
+  private readonly calendarEvents: StoredCalendarEvent[] = [];
 
   public async ensureGlobalCommunity(): Promise<GlobalCommunity> {
     return { server: this.server, channel: this.channel };
@@ -196,6 +210,50 @@ export class InMemoryChatRepository implements ChatRepository {
     return this.mapMessage(message);
   }
 
+  public async listCalendarEvents(viewerId: string): Promise<CalendarEventView[]> {
+    return this.calendarEvents
+      .slice()
+      .sort((a, b) => a.startAt.getTime() - b.startAt.getTime())
+      .map((event) => this.mapCalendarEvent(event, viewerId));
+  }
+
+  public async createCalendarEvent(
+    input: { creatorId: string } & CreateCalendarEventRequest
+  ): Promise<CalendarEventView> {
+    const event: StoredCalendarEvent = {
+      id: randomUUID(),
+      creatorId: input.creatorId,
+      title: input.title,
+      description: input.description ?? "",
+      startAt: new Date(input.startAt),
+      createdAt: new Date(Date.now() + this.calendarEvents.length),
+      optInUserIds: new Set([input.creatorId])
+    };
+
+    this.calendarEvents.push(event);
+    return this.mapCalendarEvent(event, input.creatorId);
+  }
+
+  public async setCalendarEventOptIn(
+    userId: string,
+    eventId: string,
+    input: SetCalendarEventOptInRequest
+  ): Promise<CalendarEventView> {
+    const event = this.calendarEvents.find((candidate) => candidate.id === eventId);
+
+    if (!event) {
+      throw new Error("Calendar event not found");
+    }
+
+    if (input.optedIn) {
+      event.optInUserIds.add(userId);
+    } else {
+      event.optInUserIds.delete(userId);
+    }
+
+    return this.mapCalendarEvent(event, userId);
+  }
+
   private ensureMembership(userId: string) {
     if (!this.memberships.some((membership) => membership.userId === userId)) {
       this.memberships.push({ userId, serverId: this.server.id, joinedAt: new Date() });
@@ -230,6 +288,36 @@ export class InMemoryChatRepository implements ChatRepository {
       editedAt: message.editedAt?.toISOString() ?? null,
       author: this.mapUser(user),
       attachments: message.attachments
+    };
+  }
+
+  private mapCalendarEvent(event: StoredCalendarEvent, viewerId: string): CalendarEventView {
+    const creator = this.users.get(event.creatorId);
+
+    if (!creator) {
+      throw new Error("Missing creator");
+    }
+
+    return {
+      id: event.id,
+      title: event.title,
+      description: event.description,
+      startAt: event.startAt.toISOString(),
+      createdAt: event.createdAt.toISOString(),
+      creator: this.mapUser(creator),
+      optIns: [...event.optInUserIds].map((userId) => {
+        const user = this.users.get(userId);
+
+        if (!user) {
+          throw new Error("Missing opt-in user");
+        }
+
+        return {
+          user: this.mapUser(user),
+          createdAt: event.createdAt.toISOString()
+        };
+      }),
+      viewerOptedIn: event.optInUserIds.has(viewerId)
     };
   }
 }

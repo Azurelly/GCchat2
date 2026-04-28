@@ -1,8 +1,11 @@
 import type {
   AuthResponse,
   BootstrapPayload,
+  CalendarEventView,
+  CreateCalendarEventRequest,
   CreateMessageRequest,
   MessageView,
+  SetCalendarEventOptInRequest,
   UpdateProfileRequest,
   UploadKind,
   UploadResponse,
@@ -54,6 +57,24 @@ export class ApiClient {
   public createMessage(channelId: string, input: CreateMessageRequest) {
     return this.request<MessageView>(`/channels/${channelId}/messages`, {
       method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public getCalendarEvents() {
+    return this.request<CalendarEventView[]>("/calendar/events");
+  }
+
+  public createCalendarEvent(input: CreateCalendarEventRequest) {
+    return this.request<CalendarEventView>("/calendar/events", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public setCalendarEventOptIn(eventId: string, input: SetCalendarEventOptInRequest) {
+    return this.request<CalendarEventView>(`/calendar/events/${eventId}/opt-in`, {
+      method: "PATCH",
       body: JSON.stringify(input)
     });
   }

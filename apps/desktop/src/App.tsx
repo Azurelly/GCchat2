@@ -1,22 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
+  CalendarDays,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
   Download,
   Hash,
   ImagePlus,
   Loader2,
   LogOut,
   MessageCircle,
+  Plus,
   Send,
   Settings,
   Sparkles,
   Upload,
+  Users,
   X
 } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
 import type {
   AuthResponse,
   BootstrapPayload,
+  CalendarEventView,
   CreateMessageRequest,
   MessageView,
   ServerMemberView,
@@ -29,6 +37,7 @@ import { API_URL, ApiClient } from "./api";
 const tokenStorageKey = "gcchat.token";
 
 type ChatSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+type ActiveFeature = "chat" | "calendar";
 
 interface Session extends BootstrapPayload {
   token: string;
@@ -38,7 +47,9 @@ const api = new ApiClient();
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [activeFeature, setActiveFeature] = useState<ActiveFeature>("chat");
   const [messages, setMessages] = useState<MessageView[]>([]);
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<UserProfile | null>(null);
@@ -80,6 +91,7 @@ export function App() {
       socketRef.current?.disconnect();
       socketRef.current = null;
       setMessages([]);
+      setCalendarEvents([]);
       return;
     }
 
@@ -91,6 +103,15 @@ export function App() {
       .then((history) => {
         if (active) {
           setMessages(history);
+        }
+      })
+      .catch((requestError) => setError(getMessage(requestError)));
+
+    api
+      .getCalendarEvents()
+      .then((events) => {
+        if (active) {
+          setCalendarEvents(events);
         }
       })
       .catch((requestError) => setError(getMessage(requestError)));
@@ -121,11 +142,20 @@ export function App() {
           message.author.id === profile.id ? { ...message, author: profile } : message
         )
       );
+      setCalendarEvents((current) => applyProfileUpdateToCalendarEvents(current, profile));
       setSelectedProfile((current) => (current?.id === profile.id ? profile : current));
     });
 
     socket.on("members:updated", (members) => {
       setSession((current) => (current ? { ...current, members } : current));
+    });
+
+    socket.on("calendar:event:upsert", () => {
+      void api.getCalendarEvents().then((events) => {
+        if (active) {
+          setCalendarEvents(events);
+        }
+      });
     });
 
     socket.on("connect_error", (socketError) => setError(socketError.message));
@@ -158,6 +188,14 @@ export function App() {
     setSettingsOpen(false);
   };
 
+  const handleCalendarEventCreated = (event: CalendarEventView) => {
+    setCalendarEvents((current) => upsertCalendarEvent(current, event));
+  };
+
+  const handleCalendarEventUpdated = (event: CalendarEventView) => {
+    setCalendarEvents((current) => upsertCalendarEvent(current, event));
+  };
+
   if (loading) {
     return (
       <div className="loading-screen">
@@ -173,8 +211,21 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className="server-rail">
-        <button className="server-pill active" aria-label={session.server.name}>
+        <button
+          className={`server-pill ${activeFeature === "chat" ? "active" : ""}`}
+          onClick={() => setActiveFeature("chat")}
+          aria-label="Chat"
+          title="Chat"
+        >
           <MessageCircle size={25} />
+        </button>
+        <button
+          className={`server-pill ${activeFeature === "calendar" ? "active" : ""}`}
+          onClick={() => setActiveFeature("calendar")}
+          aria-label="GC calendar"
+          title="GC calendar"
+        >
+          <CalendarDays size={24} />
         </button>
       </aside>
 
@@ -185,10 +236,22 @@ export function App() {
         </div>
 
         <div className="channel-group">
-          <div className="channel-group-title">Text Channels</div>
-          <button className="channel-link active">
+          <div className="channel-group-title">
+            {activeFeature === "chat" ? "Text Channels" : "Hub Features"}
+          </div>
+          <button
+            className={`channel-link ${activeFeature === "chat" ? "active" : ""}`}
+            onClick={() => setActiveFeature("chat")}
+          >
             <Hash size={18} />
             {session.channel.name}
+          </button>
+          <button
+            className={`channel-link ${activeFeature === "calendar" ? "active" : ""}`}
+            onClick={() => setActiveFeature("calendar")}
+          >
+            <CalendarDays size={18} />
+            GC calendar
           </button>
         </div>
 
@@ -209,40 +272,57 @@ export function App() {
         </div>
       </aside>
 
-      <main className="chat-panel">
-        <header className="chat-header">
-          <div className="chat-title">
-            <Hash size={22} />
-            <span>{session.channel.name}</span>
-          </div>
-          <UpdateButton status={updateStatus} />
-        </header>
+      {activeFeature === "chat" ? (
+        <main className="chat-panel">
+          <header className="chat-header">
+            <div className="chat-title">
+              <Hash size={22} />
+              <span>{session.channel.name}</span>
+            </div>
+            <UpdateButton status={updateStatus} />
+          </header>
 
-        {error ? (
-          <div className="error-banner">
-            <span>{error}</span>
-            <button onClick={() => setError(null)} aria-label="Dismiss">
-              <X size={16} />
-            </button>
-          </div>
-        ) : null}
+          {error ? (
+            <div className="error-banner">
+              <span>{error}</span>
+              <button onClick={() => setError(null)} aria-label="Dismiss">
+                <X size={16} />
+              </button>
+            </div>
+          ) : null}
 
-        <MessageList messages={messages} onProfile={setSelectedProfile} />
-        <Composer
-          channelId={session.channel.id}
-          socket={socketRef.current}
+          <MessageList messages={messages} onProfile={setSelectedProfile} />
+          <Composer
+            channelId={session.channel.id}
+            socket={socketRef.current}
+            onError={setError}
+            onFallbackMessage={(message) =>
+              setMessages((current) =>
+                current.some((existing) => existing.id === message.id)
+                  ? current
+                  : [...current, message]
+              )
+            }
+          />
+        </main>
+      ) : (
+        <CalendarView
+          events={calendarEvents}
+          updateStatus={updateStatus}
+          onCreated={handleCalendarEventCreated}
+          onUpdated={handleCalendarEventUpdated}
+          onProfile={setSelectedProfile}
           onError={setError}
-          onFallbackMessage={(message) =>
-            setMessages((current) =>
-              current.some((existing) => existing.id === message.id)
-                ? current
-                : [...current, message]
-            )
-          }
+          error={error}
+          onDismissError={() => setError(null)}
         />
-      </main>
+      )}
 
-      <MembersPanel members={session.members} onProfile={setSelectedProfile} />
+      {activeFeature === "chat" ? (
+        <MembersPanel members={session.members} onProfile={setSelectedProfile} />
+      ) : (
+        <CalendarSidePanel events={calendarEvents} />
+      )}
 
       {settingsOpen ? (
         <SettingsModal
@@ -525,6 +605,298 @@ function Composer({
   );
 }
 
+function CalendarView({
+  events,
+  updateStatus,
+  onCreated,
+  onUpdated,
+  onProfile,
+  onError,
+  error,
+  onDismissError
+}: {
+  events: CalendarEventView[];
+  updateStatus: UpdateStatus;
+  onCreated: (event: CalendarEventView) => void;
+  onUpdated: (event: CalendarEventView) => void;
+  onProfile: (profile: UserProfile) => void;
+  onError: (error: string | null) => void;
+  error: string | null;
+  onDismissError: () => void;
+}) {
+  const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()));
+  const [selectedDate, setSelectedDate] = useState(() => toDateInputValue(new Date()));
+  const [time, setTime] = useState("18:00");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [busyEventId, setBusyEventId] = useState<string | null>(null);
+  const calendarDays = useMemo(
+    () => buildCalendarDays(visibleMonth, events),
+    [events, visibleMonth]
+  );
+  const upcomingEvents = useMemo(
+    () => events.slice().sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt)),
+    [events]
+  );
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!title.trim() || saving) {
+      return;
+    }
+
+    setSaving(true);
+    onError(null);
+
+    try {
+      const created = await api.createCalendarEvent({
+        title,
+        description,
+        startAt: combineDateAndTime(selectedDate, time).toISOString()
+      });
+
+      onCreated(created);
+      setTitle("");
+      setDescription("");
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleOptIn = async (event: CalendarEventView) => {
+    setBusyEventId(event.id);
+    onError(null);
+
+    try {
+      const updated = await api.setCalendarEventOptIn(event.id, {
+        optedIn: !event.viewerOptedIn
+      });
+      onUpdated(updated);
+    } catch (requestError) {
+      onError(getMessage(requestError));
+    } finally {
+      setBusyEventId(null);
+    }
+  };
+
+  return (
+    <main className="calendar-panel">
+      <header className="chat-header">
+        <div className="chat-title">
+          <CalendarDays size={22} />
+          <span>GC calendar</span>
+        </div>
+        <UpdateButton status={updateStatus} />
+      </header>
+
+      {error ? (
+        <div className="error-banner">
+          <span>{error}</span>
+          <button onClick={onDismissError} aria-label="Dismiss">
+            <X size={16} />
+          </button>
+        </div>
+      ) : null}
+
+      <section className="calendar-content">
+        <div className="calendar-board">
+          <div className="calendar-toolbar">
+            <button
+              className="icon-button"
+              onClick={() => setVisibleMonth(addMonths(visibleMonth, -1))}
+              aria-label="Previous month"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <h2>{formatMonth(visibleMonth)}</h2>
+            <button
+              className="icon-button"
+              onClick={() => setVisibleMonth(addMonths(visibleMonth, 1))}
+              aria-label="Next month"
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+
+          <div className="calendar-weekdays">
+            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+              <span key={day}>{day}</span>
+            ))}
+          </div>
+
+          <div className="calendar-grid">
+            {calendarDays.map((day) => (
+              <button
+                className={[
+                  "calendar-day",
+                  day.currentMonth ? "" : "outside",
+                  day.dateValue === selectedDate ? "selected" : "",
+                  day.events.length > 0 ? "has-events" : ""
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                key={day.dateValue}
+                onClick={() => {
+                  setSelectedDate(day.dateValue);
+
+                  if (!day.currentMonth) {
+                    setVisibleMonth(startOfMonth(day.date));
+                  }
+                }}
+              >
+                <span className="day-number">{day.date.getDate()}</span>
+                <span className="day-events">
+                  {day.events.slice(0, 2).map((event) => (
+                    <span key={event.id}>{event.title}</span>
+                  ))}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="calendar-column">
+          <form className="calendar-form" onSubmit={submit}>
+            <h3>Create Event</h3>
+            <label>
+              Title
+              <input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Food run, birthday, movie night"
+                maxLength={90}
+              />
+            </label>
+            <div className="calendar-form-row">
+              <label>
+                Date
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(event) => setSelectedDate(event.target.value)}
+                />
+              </label>
+              <label>
+                Time
+                <input type="time" value={time} onChange={(event) => setTime(event.target.value)} />
+              </label>
+            </div>
+            <label>
+              Description
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="Details, location, who's driving, anything useful"
+                maxLength={800}
+              />
+            </label>
+            <button className="primary-button" disabled={saving || !title.trim()}>
+              {saving ? <Loader2 className="spin" size={17} /> : <Plus size={17} />}
+              Add Event
+            </button>
+          </form>
+
+          <div className="calendar-events">
+            {upcomingEvents.length === 0 ? (
+              <div className="empty-calendar">
+                <CalendarDays size={30} />
+                <h3>No events yet</h3>
+              </div>
+            ) : (
+              upcomingEvents.map((event) => (
+                <CalendarEventCard
+                  event={event}
+                  key={event.id}
+                  busy={busyEventId === event.id}
+                  onProfile={onProfile}
+                  onToggleOptIn={() => toggleOptIn(event)}
+                />
+              ))
+            )}
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function CalendarEventCard({
+  event,
+  busy,
+  onProfile,
+  onToggleOptIn
+}: {
+  event: CalendarEventView;
+  busy: boolean;
+  onProfile: (profile: UserProfile) => void;
+  onToggleOptIn: () => void;
+}) {
+  return (
+    <article className="calendar-event-card">
+      <div className="event-time">
+        <Clock size={16} />
+        <time>{formatEventDate(event.startAt)}</time>
+      </div>
+      <h3>{event.title}</h3>
+      {event.description ? <p>{event.description}</p> : null}
+      <button className="event-creator" onClick={() => onProfile(event.creator)}>
+        <Avatar profile={event.creator} size="sm" />
+        <span>Created by {event.creator.displayName}</span>
+      </button>
+      <div className="event-footer">
+        <div className="event-going">
+          <Users size={16} />
+          <span>{event.optIns.length} going</span>
+        </div>
+        <button
+          className={`event-opt-button ${event.viewerOptedIn ? "active" : ""}`}
+          onClick={onToggleOptIn}
+          disabled={busy}
+        >
+          {busy ? <Loader2 className="spin" size={15} /> : event.viewerOptedIn ? <Check size={15} /> : <Plus size={15} />}
+          {event.viewerOptedIn ? "Going" : "Join"}
+        </button>
+      </div>
+      {event.optIns.length > 0 ? (
+        <div className="event-attendees">
+          {event.optIns.slice(0, 6).map((optIn) => (
+            <button key={optIn.user.id} onClick={() => onProfile(optIn.user)} title={optIn.user.displayName}>
+              <Avatar profile={optIn.user} size="sm" />
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function CalendarSidePanel({ events }: { events: CalendarEventView[] }) {
+  const soon = events
+    .slice()
+    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))
+    .slice(0, 6);
+
+  return (
+    <aside className="members-panel calendar-agenda-panel">
+      <div className="members-title">Upcoming</div>
+      {soon.length === 0 ? (
+        <p className="agenda-empty">No events yet.</p>
+      ) : (
+        soon.map((event) => (
+          <div className="agenda-row" key={event.id}>
+            <strong>{event.title}</strong>
+            <span>{formatShortEventDate(event.startAt)}</span>
+          </div>
+        ))
+      )}
+    </aside>
+  );
+}
+
 function MembersPanel({
   members,
   onProfile
@@ -717,6 +1089,30 @@ function applyProfileUpdate(session: Session, profile: UserProfile): Session {
   };
 }
 
+function applyProfileUpdateToCalendarEvents(
+  events: CalendarEventView[],
+  profile: UserProfile
+): CalendarEventView[] {
+  return events.map((event) => ({
+    ...event,
+    creator: event.creator.id === profile.id ? profile : event.creator,
+    optIns: event.optIns.map((optIn) =>
+      optIn.user.id === profile.id ? { ...optIn, user: profile } : optIn
+    )
+  }));
+}
+
+function upsertCalendarEvent(
+  events: CalendarEventView[],
+  event: CalendarEventView
+): CalendarEventView[] {
+  const next = events.some((existing) => existing.id === event.id)
+    ? events.map((existing) => (existing.id === event.id ? event : existing))
+    : [...events, event];
+
+  return next.sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt));
+}
+
 function emitMessage(socket: ChatSocket, payload: { channelId: string } & CreateMessageRequest) {
   return new Promise<void>((resolve, reject) => {
     socket.emit("message:create", payload, (response) => {
@@ -727,6 +1123,62 @@ function emitMessage(socket: ChatSocket, payload: { channelId: string } & Create
       }
     });
   });
+}
+
+function buildCalendarDays(visibleMonth: Date, events: CalendarEventView[]) {
+  const eventsByDate = new Map<string, CalendarEventView[]>();
+
+  for (const event of events) {
+    const key = toDateInputValue(new Date(event.startAt));
+    eventsByDate.set(key, [...(eventsByDate.get(key) ?? []), event]);
+  }
+
+  const monthStart = startOfMonth(visibleMonth);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(monthStart.getDate() - monthStart.getDay());
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + index);
+    const dateValue = toDateInputValue(date);
+
+    return {
+      date,
+      dateValue,
+      currentMonth:
+        date.getMonth() === visibleMonth.getMonth() &&
+        date.getFullYear() === visibleMonth.getFullYear(),
+      events: eventsByDate.get(dateValue) ?? []
+    };
+  });
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function addMonths(date: Date, amount: number) {
+  return new Date(date.getFullYear(), date.getMonth() + amount, 1);
+}
+
+function toDateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function combineDateAndTime(dateValue: string, timeValue: string) {
+  const [year = "1970", month = "01", day = "01"] = dateValue.split("-");
+  const [hour = "00", minute = "00"] = timeValue.split(":");
+
+  return new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute)
+  );
 }
 
 function formatTime(value: string) {
@@ -741,6 +1193,32 @@ function formatDate(value: string) {
     month: "long",
     day: "numeric",
     year: "numeric"
+  }).format(new Date(value));
+}
+
+function formatMonth(value: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    year: "numeric"
+  }).format(value);
+}
+
+function formatEventDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function formatShortEventDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
   }).format(new Date(value));
 }
 

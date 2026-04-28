@@ -1,8 +1,11 @@
 import type {
   BootstrapPayload,
+  CalendarEventView,
   ChannelSummary,
+  CreateCalendarEventRequest,
   CreateMessageRequest,
   MessageView,
+  SetCalendarEventOptInRequest,
   ServerMemberView,
   ServerSummary,
   UpdateProfileRequest,
@@ -34,4 +37,13 @@ export interface ChatRepository {
   createMessage(
     input: { channelId: string; authorId: string } & CreateMessageRequest
   ): Promise<MessageView>;
+  listCalendarEvents(viewerId: string): Promise<CalendarEventView[]>;
+  createCalendarEvent(
+    input: { creatorId: string } & CreateCalendarEventRequest
+  ): Promise<CalendarEventView>;
+  setCalendarEventOptIn(
+    userId: string,
+    eventId: string,
+    input: SetCalendarEventOptInRequest
+  ): Promise<CalendarEventView>;
 }

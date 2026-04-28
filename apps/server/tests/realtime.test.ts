@@ -29,7 +29,8 @@ describe("realtime messaging", () => {
     const realtime: RealtimePublisher = {
       emitMessage: () => undefined,
       emitProfileUpdated: () => undefined,
-      emitMembersUpdated: () => undefined
+      emitMembersUpdated: () => undefined,
+      emitCalendarEvent: () => undefined
     };
     const app = createApp({ env, repo, storage: new MemoryAssetStorage(), realtime });
     const server = http.createServer(app);

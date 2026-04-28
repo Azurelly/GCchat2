@@ -2,6 +2,14 @@
 
 These notes are for future Codex sessions working in this repository. Keep them current when the release/update flow changes.
 
+## Product Direction
+
+GCChat is a private social hub for one large friend group. It should feel like a central home base for chat, calendar events, polls, plans, and future group-specific features. It is not intended to become a public Discord clone with multiple user-created servers.
+
+Use the left rail as feature navigation for the shared hub. The top feature is chat. The next feature is the GC calendar. The existing `Server`, `Channel`, and `Membership` database names are legacy MVP implementation details for the single shared hub; do not expose new UI copy that implies people are creating or switching between separate servers unless the user explicitly changes direction.
+
+User-facing product notes live in `docs/product.md`.
+
 ## Desktop Distribution And Auto-Update
 
 The mission is: users download `GCChat Setup.exe` once from GitHub Releases, then installed Windows builds auto-detect later published GitHub Releases and show an in-app `Update Ready` button that restarts and installs the update.
@@ -59,4 +67,3 @@ CI lessons already learned:
 - If the workflow fails in `Publish desktop release` with branch or npm publish errors, check that the command is using Electron Forge through `pnpm --filter @gcchat/desktop run publish`.
 
 Installed production builds use Electron's updater against GitHub Releases. The app exposes update status through the preload bridge and shows the update button in the chat header.
-

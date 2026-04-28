@@ -40,3 +40,17 @@ export const createMessageSchema = z
   .refine((value) => value.content.length > 0 || value.attachments.length > 0, {
     message: "Message must include text or an attachment."
   });
+
+export const createCalendarEventSchema = z
+  .object({
+    title: z.string().trim().min(1, "Event title is required.").max(90),
+    description: z.string().trim().max(800).default(""),
+    startAt: z.string().datetime({ offset: true })
+  })
+  .strict();
+
+export const setCalendarEventOptInSchema = z
+  .object({
+    optedIn: z.boolean()
+  })
+  .strict();

@@ -1,6 +1,8 @@
 # GCChat2
 
-A Discord-inspired Electron messaging MVP with a central Node API, Socket.IO realtime chat, Prisma, Supabase Postgres, and Supabase Storage.
+A private friend-group hub built with Electron, React, a central Node API, Socket.IO realtime chat, Prisma, Supabase Postgres, and Supabase Storage.
+
+GCChat uses a Discord-inspired visual style, but the product is a shared home base for one friend group rather than a many-server clone. The left rail is feature navigation for chat, the GC calendar, and future tools like polls or planning features. See `docs/product.md` for the product direction.
 
 ## Recommended Services
 
@@ -36,7 +38,7 @@ A Discord-inspired Electron messaging MVP with a central Node API, Socket.IO rea
    pnpm dev
    ```
 
-The first registered account creates and joins the global server/channel automatically; every later account is also added to it.
+The first registered account creates and joins the shared hub automatically; every later account is also added to it.
 
 ## Desktop Releases
 

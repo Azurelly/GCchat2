@@ -97,6 +97,10 @@ export function attachRealtime(
     io.to(serverRoom(serverId)).emit("members:updated", members);
   };
 
+  realtime.emitCalendarEvent = (event) => {
+    io.emit("calendar:event:upsert", event);
+  };
+
   return io;
 }
 

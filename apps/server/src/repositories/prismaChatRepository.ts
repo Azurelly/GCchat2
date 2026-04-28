@@ -4,9 +4,12 @@ import {
   GLOBAL_SERVER_NAME,
   type AttachmentView,
   type BootstrapPayload,
+  type CalendarEventView,
   type ChannelSummary,
+  type CreateCalendarEventRequest,
   type CreateMessageRequest,
   type MessageView,
+  type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
   type UpdateProfileRequest,
@@ -36,7 +39,28 @@ type MessageWithRelations = {
   attachments: AttachmentView[];
 };
 
+type CalendarEventWithRelations = {
+  id: string;
+  title: string;
+  description: string;
+  startAt: Date;
+  createdAt: Date;
+  creator: UserWithProfile;
+  optIns: Array<{
+    createdAt: Date;
+    user: UserWithProfile;
+  }>;
+};
+
 const GLOBAL_SERVER_KEY = "global";
+
+const calendarEventInclude = {
+  creator: { include: { profile: true } },
+  optIns: {
+    include: { user: { include: { profile: true } } },
+    orderBy: { createdAt: "asc" as const }
+  }
+};
 
 export class PrismaChatRepository implements ChatRepository {
   public constructor(private readonly prisma: PrismaClient) {}
@@ -231,6 +255,70 @@ export class PrismaChatRepository implements ChatRepository {
 
     return mapMessage(message);
   }
+
+  public async listCalendarEvents(viewerId: string): Promise<CalendarEventView[]> {
+    const events = await this.prisma.calendarEvent.findMany({
+      include: calendarEventInclude,
+      orderBy: [{ startAt: "asc" }, { createdAt: "asc" }]
+    });
+
+    return events.map((event) => mapCalendarEvent(event, viewerId));
+  }
+
+  public async createCalendarEvent(
+    input: { creatorId: string } & CreateCalendarEventRequest
+  ): Promise<CalendarEventView> {
+    const event = await this.prisma.calendarEvent.create({
+      data: {
+        creatorId: input.creatorId,
+        title: input.title,
+        description: input.description ?? "",
+        startAt: new Date(input.startAt),
+        optIns: { create: { userId: input.creatorId } }
+      },
+      include: calendarEventInclude
+    });
+
+    return mapCalendarEvent(event, input.creatorId);
+  }
+
+  public async setCalendarEventOptIn(
+    userId: string,
+    eventId: string,
+    input: SetCalendarEventOptInRequest
+  ): Promise<CalendarEventView> {
+    const event = await this.prisma.calendarEvent.findUnique({
+      where: { id: eventId },
+      select: { id: true }
+    });
+
+    if (!event) {
+      throw new HttpError(404, "Calendar event not found");
+    }
+
+    if (input.optedIn) {
+      await this.prisma.calendarEventOptIn.upsert({
+        where: { eventId_userId: { eventId, userId } },
+        update: {},
+        create: { eventId, userId }
+      });
+    } else {
+      await this.prisma.calendarEventOptIn.deleteMany({
+        where: { eventId, userId }
+      });
+    }
+
+    const updated = await this.prisma.calendarEvent.findUnique({
+      where: { id: eventId },
+      include: calendarEventInclude
+    });
+
+    if (!updated) {
+      throw new HttpError(404, "Calendar event not found");
+    }
+
+    return mapCalendarEvent(updated, userId);
+  }
 }
 
 function mapUserProfile(user: UserWithProfile): UserProfile {
@@ -259,5 +347,24 @@ function mapMessage(message: MessageWithRelations): MessageView {
       mimeType: attachment.mimeType,
       size: attachment.size
     }))
+  };
+}
+
+function mapCalendarEvent(
+  event: CalendarEventWithRelations,
+  viewerId: string
+): CalendarEventView {
+  return {
+    id: event.id,
+    title: event.title,
+    description: event.description,
+    startAt: event.startAt.toISOString(),
+    createdAt: event.createdAt.toISOString(),
+    creator: mapUserProfile(event.creator),
+    optIns: event.optIns.map((optIn) => ({
+      user: mapUserProfile(optIn.user),
+      createdAt: optIn.createdAt.toISOString()
+    })),
+    viewerOptedIn: event.optIns.some((optIn) => optIn.user.id === viewerId)
   };
 }

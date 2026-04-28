@@ -128,3 +128,52 @@ describe("messages API", () => {
     expect(history.body[1].attachments[0].fileName).toBe("image.png");
   });
 });
+
+describe("calendar API", () => {
+  it("creates calendar events, shows the creator, and lets other users opt in", async () => {
+    const { app } = makeApp();
+    const alice = await request(app)
+      .post("/auth/register")
+      .send({ username: "Alice", password: "password123" })
+      .expect(201);
+    const bob = await request(app)
+      .post("/auth/register")
+      .send({ username: "Bob", password: "password123" })
+      .expect(201);
+
+    const event = await request(app)
+      .post("/calendar/events")
+      .set("authorization", `Bearer ${alice.body.token}`)
+      .send({
+        title: "Dinner run",
+        description: "Meet up and grab food.",
+        startAt: "2026-05-03T18:30:00.000Z"
+      })
+      .expect(201);
+
+    expect(event.body.title).toBe("Dinner run");
+    expect(event.body.creator.username).toBe("alice");
+    expect(event.body.viewerOptedIn).toBe(true);
+    expect(event.body.optIns).toHaveLength(1);
+
+    const optedIn = await request(app)
+      .patch(`/calendar/events/${event.body.id}/opt-in`)
+      .set("authorization", `Bearer ${bob.body.token}`)
+      .send({ optedIn: true })
+      .expect(200);
+
+    expect(optedIn.body.viewerOptedIn).toBe(true);
+    expect(optedIn.body.optIns.map((optIn: { user: { username: string } }) => optIn.user.username)).toEqual([
+      "alice",
+      "bob"
+    ]);
+
+    const history = await request(app)
+      .get("/calendar/events")
+      .set("authorization", `Bearer ${bob.body.token}`)
+      .expect(200);
+
+    expect(history.body).toHaveLength(1);
+    expect(history.body[0].viewerOptedIn).toBe(true);
+  });
+});

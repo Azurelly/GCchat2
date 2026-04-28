@@ -9,14 +9,16 @@ datasource db {
 }
 
 model User {
-  id           String       @id @default(cuid())
-  username     String       @unique
-  passwordHash String
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  profile      Profile?
-  memberships  Membership[]
-  messages     Message[]
+  id             String               @id @default(cuid())
+  username       String               @unique
+  passwordHash   String
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  profile        Profile?
+  memberships    Membership[]
+  messages       Message[]
+  createdEvents  CalendarEvent[]      @relation("CalendarEventCreator")
+  calendarOptIns CalendarEventOptIn[]
 }
 
 model Profile {
@@ -54,12 +56,12 @@ model Channel {
 }
 
 model Membership {
-  id        String   @id @default(cuid())
-  userId    String
-  serverId  String
-  joinedAt  DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  id       String   @id @default(cuid())
+  userId   String
+  serverId String
+  joinedAt DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  server   Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
 
   @@unique([userId, serverId])
 }
@@ -87,4 +89,31 @@ model Attachment {
   size      Int
   createdAt DateTime @default(now())
   message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model CalendarEvent {
+  id          String               @id @default(cuid())
+  creatorId   String
+  title       String
+  description String               @default("")
+  startAt     DateTime
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  creator     User                 @relation("CalendarEventCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  optIns      CalendarEventOptIn[]
+
+  @@index([startAt])
+  @@index([creatorId])
+}
+
+model CalendarEventOptIn {
+  id        String        @id @default(cuid())
+  eventId   String
+  userId    String
+  createdAt DateTime      @default(now())
+  event     CalendarEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+  @@index([userId])
 }

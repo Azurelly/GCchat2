@@ -4,6 +4,7 @@ import multer from "multer";
 import type {
   MessageView,
   ServerMemberView,
+  CalendarEventView,
   UpdateProfileRequest,
   UploadKind,
   UserProfile
@@ -20,12 +21,20 @@ import { asyncRoute, errorHandler, HttpError } from "./errors";
 import type { ServerEnv } from "./env";
 import type { ChatRepository } from "./repositories/chatRepository";
 import type { AssetStorage } from "./storage";
-import { createMessageSchema, loginSchema, registerSchema, updateProfileSchema } from "./validation";
+import {
+  createCalendarEventSchema,
+  createMessageSchema,
+  loginSchema,
+  registerSchema,
+  setCalendarEventOptInSchema,
+  updateProfileSchema
+} from "./validation";
 
 export interface RealtimePublisher {
   emitMessage(message: MessageView): void;
   emitProfileUpdated(profile: UserProfile): void;
   emitMembersUpdated(serverId: string, members: ServerMemberView[]): void;
+  emitCalendarEvent(event: CalendarEventView): void;
 }
 
 export interface AppDependencies {
@@ -180,6 +189,44 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
 
       realtime?.emitMessage(message);
       res.status(201).json(message);
+    })
+  );
+
+  app.get(
+    "/calendar/events",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      res.json(await repo.listCalendarEvents(user.id));
+    })
+  );
+
+  app.post(
+    "/calendar/events",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const parsed = createCalendarEventSchema.parse(req.body);
+      const event = await repo.createCalendarEvent({
+        creatorId: user.id,
+        title: parsed.title,
+        description: parsed.description,
+        startAt: parsed.startAt
+      });
+
+      realtime?.emitCalendarEvent(event);
+      res.status(201).json(event);
+    })
+  );
+
+  app.patch(
+    "/calendar/events/:id/opt-in",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const eventId = requiredParam(req, "id");
+      const parsed = setCalendarEventOptInSchema.parse(req.body);
+      const event = await repo.setCalendarEventOptIn(user.id, eventId, parsed);
+
+      realtime?.emitCalendarEvent(event);
+      res.json(event);
     })
   );
 
