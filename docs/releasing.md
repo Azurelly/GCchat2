@@ -1,6 +1,6 @@
 # Releasing GCChat Desktop
 
-This app uses Electron Forge, GitHub Releases, and `update-electron-app`.
+This app uses Electron Forge, GitHub Releases, and Electron's built-in updater.
 
 ## One-time Setup
 
@@ -49,7 +49,7 @@ Keep all generated release assets attached to the GitHub Release.
 
 ## How Updates Work
 
-Installed production builds check GitHub Releases through `update.electronjs.org`.
+Installed production builds check GitHub Releases through Electron's update service.
 When a newer published release exists, the app downloads it in the background. After
 download, the chat header shows an `Update Ready` button. Clicking it calls
 Electron's updater restart/install flow, closes the app, installs the update, and
