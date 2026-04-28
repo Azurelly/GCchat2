@@ -225,6 +225,7 @@ export function App() {
   const voiceRoomRef = useRef<Room | null>(null);
   const voiceAudioElementsRef = useRef<Set<HTMLMediaElement>>(new Set());
   const voiceJoinedAtRef = useRef<string | null>(null);
+  const screenShareStartingRef = useRef(false);
   const voiceServerStateRef = useRef<VoiceStateView>({
     channelName: "General Voice",
     participants: []
@@ -377,7 +378,9 @@ export function App() {
   }, []);
 
   const announceVoicePresence = useCallback(async () => {
-    if (!voiceRoomRef.current) {
+    const room = voiceRoomRef.current;
+
+    if (!room) {
       return null;
     }
 
@@ -390,7 +393,10 @@ export function App() {
     const selfState = await emitVoiceSelfState({
       selfMuted: voiceMutedRef.current,
       selfDeafened: voiceDeafenedRef.current,
-      screenSharing: voiceSharingRef.current
+      screenSharing:
+        voiceSharingRef.current ||
+        screenShareStartingRef.current ||
+        isParticipantScreenSharing(room.localParticipant)
     });
 
     return selfState ?? joinedState;
@@ -476,13 +482,13 @@ export function App() {
           track?: LocalTrack | RemoteTrack | null;
           isMuted?: boolean;
         }>;
-        const screenPublication = publications.find(
-          (publication) => publication.source === Track.Source.ScreenShare
-        );
+        const screenPublication = publications.find((publication) => publication.source === Track.Source.ScreenShare);
 
         if (!screenPublication) {
           return;
         }
+
+        const status = getParticipantScreenShareStatus(participant);
 
         nextShares.push({
           userId: participant.identity,
@@ -490,7 +496,7 @@ export function App() {
           isLocal,
           profile,
           track: screenPublication.track ?? null,
-          status: screenPublication.isMuted ? "unavailable" : screenPublication.track ? "live" : "starting"
+          status: status ?? "starting"
         });
       };
 
@@ -500,7 +506,12 @@ export function App() {
       }
 
       setScreenShares(nextShares);
-      setVoiceSharing(nextShares.some((share) => share.userId === session.user.id && share.status === "live"));
+      const localSharing =
+        screenShareStartingRef.current ||
+        nextShares.some((share) => share.userId === session.user.id && share.status !== "ended");
+
+      voiceSharingRef.current = localSharing;
+      setVoiceSharing(localSharing);
     },
     [session]
   );
@@ -543,6 +554,7 @@ export function App() {
               ? session.user
               : session.members.find((member) => member.id === participantState.userId) ?? null;
           const liveMuted = liveParticipant ? isParticipantAudioMuted(liveParticipant) : participantState.selfMuted;
+          const liveScreenSharing = liveParticipant ? isParticipantScreenSharing(liveParticipant) : false;
           const locallyMuted = locallyMutedVoiceUsers.includes(participantState.userId);
 
           return {
@@ -558,7 +570,7 @@ export function App() {
             isServerMuted: participantState.serverMuted,
             isServerDeafened: participantState.serverDeafened,
             isSpeaking: liveParticipant?.isSpeaking ?? false,
-            isScreenSharing: participantState.screenSharing,
+            isScreenSharing: participantState.screenSharing || liveScreenSharing,
             reconnecting: participantState.reconnecting,
             profile,
             volume: voiceVolumes[participantState.userId] ?? 100,
@@ -587,6 +599,7 @@ export function App() {
     voiceRoomRef.current?.disconnect();
     voiceRoomRef.current = null;
     voiceJoinedAtRef.current = null;
+    screenShareStartingRef.current = false;
     clearVoiceAudio();
     setVoiceStatus("disconnected");
     setVoiceMuted(false);
@@ -641,6 +654,27 @@ export function App() {
         syncScreenShares(room);
         applyVoiceAudioPreferences(room);
       };
+      const syncLocalScreenSharePresence = () => {
+        const wasSharing = voiceSharingRef.current;
+
+        sync();
+
+        if (!room) {
+          return;
+        }
+
+        const localSharing = screenShareStartingRef.current || isParticipantScreenSharing(room.localParticipant);
+
+        if (wasSharing === localSharing) {
+          return;
+        }
+
+        voiceSharingRef.current = localSharing;
+        setVoiceSharing(localSharing);
+        void emitVoiceSelfState({ screenSharing: localSharing })
+          .then((state) => state && setVoiceServerState(state))
+          .catch(() => undefined);
+      };
 
       room.on(RoomEvent.ParticipantConnected, sync);
       room.on(RoomEvent.ParticipantDisconnected, sync);
@@ -649,8 +683,8 @@ export function App() {
       room.on(RoomEvent.TrackUnmuted, sync);
       room.on(RoomEvent.TrackPublished, sync);
       room.on(RoomEvent.TrackUnpublished, sync);
-      room.on(RoomEvent.LocalTrackPublished, sync);
-      room.on(RoomEvent.LocalTrackUnpublished, sync);
+      room.on(RoomEvent.LocalTrackPublished, syncLocalScreenSharePresence);
+      room.on(RoomEvent.LocalTrackUnpublished, syncLocalScreenSharePresence);
       room.on(RoomEvent.Reconnecting, () => setVoiceStatus("reconnecting"));
       room.on(RoomEvent.Reconnected, () => {
         setVoiceStatus("connected");
@@ -766,6 +800,8 @@ export function App() {
     try {
       if (voiceSharing) {
         await room.localParticipant.setScreenShareEnabled(false);
+        screenShareStartingRef.current = false;
+        voiceSharingRef.current = false;
         setVoiceSharing(false);
         setSelectedStreamUserId((current) => (current === session.user.id ? null : current));
         await emitVoiceSelfState({ screenSharing: false });
@@ -780,12 +816,19 @@ export function App() {
       }
 
       await window.gcchat.screens.selectSource(source.id);
+      screenShareStartingRef.current = true;
+      voiceSharingRef.current = true;
+      setVoiceSharing(true);
+      await room.localParticipant.setScreenShareEnabled(true);
+      screenShareStartingRef.current = false;
+      voiceSharingRef.current = true;
       setVoiceSharing(true);
       await emitVoiceSelfState({ screenSharing: true });
-      await room.localParticipant.setScreenShareEnabled(true);
       setSelectedStreamUserId(session.user.id);
       syncScreenShares(room);
     } catch (requestError) {
+      screenShareStartingRef.current = false;
+      voiceSharingRef.current = false;
       setVoiceSharing(false);
       void emitVoiceSelfState({ screenSharing: false });
       setError(getMessage(requestError));
@@ -873,9 +916,7 @@ export function App() {
       return;
     }
 
-    const selectedShare = screenShares.find(
-      (share) => share.userId === selectedStreamUserId && share.status === "live"
-    );
+    const selectedShare = screenShares.find((share) => share.userId === selectedStreamUserId);
 
     if (!selectedShare) {
       setSelectedStreamUserId(null);
@@ -1979,6 +2020,40 @@ function VoiceChannelSection({
     x: number;
     y: number;
   } | null>(null);
+  const [hoverPreview, setHoverPreview] = useState<{
+    participant: VoiceParticipantView;
+    x: number;
+    y: number;
+  } | null>(null);
+  const previewCloseTimerRef = useRef<number | null>(null);
+
+  const clearPreviewCloseTimer = () => {
+    if (previewCloseTimerRef.current !== null) {
+      window.clearTimeout(previewCloseTimerRef.current);
+      previewCloseTimerRef.current = null;
+    }
+  };
+
+  const schedulePreviewClose = () => {
+    clearPreviewCloseTimer();
+    previewCloseTimerRef.current = window.setTimeout(() => setHoverPreview(null), 120);
+  };
+
+  const openStreamPreview = (event: React.MouseEvent<HTMLElement>, participant: VoiceParticipantView) => {
+    if (!participant.isScreenSharing) {
+      return;
+    }
+
+    clearPreviewCloseTimer();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const width = 270;
+    const height = 244;
+    const gutter = 10;
+    const x = Math.max(gutter, Math.min(rect.right + gutter, window.innerWidth - width - gutter));
+    const y = Math.max(40, Math.min(rect.top - 18, window.innerHeight - height - gutter));
+
+    setHoverPreview({ participant, x, y });
+  };
 
   useEffect(() => {
     if (!contextMenu) {
@@ -1990,6 +2065,10 @@ function VoiceChannelSection({
 
     return () => window.removeEventListener("click", close);
   }, [contextMenu]);
+
+  useEffect(() => {
+    return clearPreviewCloseTimer;
+  }, []);
 
   return (
     <section className="voice-channel-section">
@@ -2023,6 +2102,8 @@ function VoiceChannelSection({
                 <div
                   className={`voice-participant-row ${participant.isScreenSharing ? "has-stream" : ""}`}
                   key={participant.userId}
+                  onMouseEnter={(event) => openStreamPreview(event, participant)}
+                  onMouseLeave={schedulePreviewClose}
                 >
                 <button
                   className={`voice-participant ${participant.isSpeaking ? "speaking" : ""} ${
@@ -2075,12 +2156,6 @@ function VoiceChannelSection({
                   ) : null}
                   {participant.isDeafened ? <VolumeX size={13} aria-label="Deafened" /> : null}
                 </button>
-                {participant.isScreenSharing ? (
-                  <StreamHoverPreview
-                    stream={screenShares.find((share) => share.userId === participant.userId) ?? null}
-                    onWatch={() => onWatchStream(participant.userId)}
-                  />
-                ) : null}
                 </div>
               ))}
             </div>
@@ -2107,6 +2182,18 @@ function VoiceChannelSection({
               onSetVolume={onSetVolume}
               onToggleLocalMute={onToggleLocalMute}
               onModerate={onModerate}
+            />
+          ) : null}
+          {hoverPreview ? (
+            <StreamHoverPreview
+              stream={screenShares.find((share) => share.userId === hoverPreview.participant.userId) ?? null}
+              position={{ x: hoverPreview.x, y: hoverPreview.y }}
+              onMouseEnter={clearPreviewCloseTimer}
+              onMouseLeave={schedulePreviewClose}
+              onWatch={() => {
+                onWatchStream(hoverPreview.participant.userId);
+                setHoverPreview(null);
+              }}
             />
           ) : null}
         </div>
@@ -2354,13 +2441,24 @@ function VoiceUserContextMenu({
 
 function StreamHoverPreview({
   stream,
+  position,
+  onMouseEnter,
+  onMouseLeave,
   onWatch
 }: {
   stream: ScreenShareView | null;
+  position: { x: number; y: number };
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
   onWatch: () => void;
 }) {
   return (
-    <div className="stream-hover-preview">
+    <div
+      className="stream-hover-preview"
+      style={{ left: position.x, top: position.y }}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <div className="stream-hover-header">
         <span>Streaming Now</span>
         <em>LIVE</em>
@@ -5105,6 +5203,29 @@ function isParticipantAudioMuted(participant: Participant) {
   }
 
   return publications.every((publication) => publication.isMuted);
+}
+
+function getParticipantScreenShareStatus(participant: Participant): ScreenShareView["status"] | null {
+  const publications = Array.from(participant.videoTrackPublications.values()) as Array<{
+    source: Track.Source;
+    track?: LocalTrack | RemoteTrack | null;
+    isMuted?: boolean;
+  }>;
+  const screenPublication = publications.find((publication) => publication.source === Track.Source.ScreenShare);
+
+  if (!screenPublication) {
+    return null;
+  }
+
+  if (screenPublication.isMuted) {
+    return "unavailable";
+  }
+
+  return screenPublication.track ? "live" : "starting";
+}
+
+function isParticipantScreenSharing(participant: Participant) {
+  return getParticipantScreenShareStatus(participant) !== null;
 }
 
 function getLiveKitParticipant(room: Room, userId: string): Participant | null {
