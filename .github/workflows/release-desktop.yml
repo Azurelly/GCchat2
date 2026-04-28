@@ -37,6 +37,12 @@ jobs:
             throw "Set the repository variable VITE_API_URL to your hosted backend URL before publishing desktop releases."
           }
 
+      - name: Generate Prisma Client
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: pnpm prisma:generate
+
       - name: Build shared package
         run: pnpm --filter @gcchat/shared build
 
