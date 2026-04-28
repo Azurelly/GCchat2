@@ -57,9 +57,7 @@ Codex owns this entire workflow by default. When the user asks for a feature/fix
    ```
 
 4. Wait for GitHub Actions workflow `Release desktop app`.
-5. Open the draft release created by Electron Forge.
-6. Confirm it includes real app assets, especially `GCChat Setup.exe`, a `.nupkg`, and `RELEASES`.
-7. Publish the draft release. Drafts and prereleases do not update installed apps.
+5. Confirm the public release includes real app assets, especially `GCChat Setup.exe`, a `.nupkg`, and `RELEASES`. Electron Forge is configured with `draft: false`, so successful release workflow runs should publish directly and become visible to installed app updaters without a manual GitHub draft-publish step.
 
 First-release setup caveat: while testing before anyone has installed the app, it is acceptable to move `v0.1.0` to a fixed commit:
 
@@ -81,6 +79,7 @@ CI lessons already learned:
 - The release workflow must generate Prisma Client and build `@gcchat/shared` before typechecking on GitHub's clean runner.
 - GitHub repo Settings -> Actions -> General -> Workflow permissions must be `Read and write permissions`.
 - If a release only shows `Source code (zip)` and `Source code (tar.gz)`, that is a tag, not the packaged app release. The installer release is created by Actions.
+- If GitHub's public latest release remains on an older tag after a successful workflow, check for an older draft release and confirm `apps/desktop/forge.config.ts` still has `draft: false`.
 - If the workflow fails in `Publish desktop release` with branch or npm publish errors, check that the command is using Electron Forge through `pnpm --filter @gcchat/desktop run publish`.
 
 Installed production builds use Electron's updater against GitHub Releases. The app exposes update status through the preload bridge and shows update controls in the custom Electron title bar. When no update is ready yet, show a small manual `Check` button; when an update has downloaded, replace it with a small `Update` button that restarts and installs.

@@ -31,7 +31,7 @@ const config: ForgeConfig = {
         owner: releaseConfig.githubOwner,
         name: releaseConfig.githubRepo
       },
-      draft: true,
+      draft: false,
       prerelease: false
     })
   ],
