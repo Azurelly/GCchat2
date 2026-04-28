@@ -28,6 +28,7 @@ describe("realtime messaging", () => {
     const repo = new InMemoryChatRepository();
     const realtime: RealtimePublisher = {
       emitMessage: () => undefined,
+      emitMessageUpdated: () => undefined,
       emitProfileUpdated: () => undefined,
       emitMembersUpdated: () => undefined,
       emitChannelsUpdated: () => undefined,

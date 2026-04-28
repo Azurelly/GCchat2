@@ -11,6 +11,7 @@ import type {
   DeleteChannelRequest,
   MessageView,
   SetCalendarEventOptInRequest,
+  ToggleMessageReactionRequest,
   UpdateAccountRequest,
   UpdateCustomEmojiRequest,
   UpdateUserBanRequest,
@@ -100,6 +101,13 @@ export class ApiClient {
 
   public createMessage(channelId: string, input: CreateMessageRequest) {
     return this.request<MessageView>(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  }
+
+  public toggleMessageReaction(messageId: string, input: ToggleMessageReactionRequest) {
+    return this.request<MessageView>(`/messages/${messageId}/reactions`, {
       method: "POST",
       body: JSON.stringify(input)
     });

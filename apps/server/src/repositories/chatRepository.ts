@@ -17,6 +17,7 @@ import type {
   UpdateUserBanRequest,
   UpdateProfileRequest,
   UpdateUserRoleRequest,
+  ToggleMessageReactionRequest,
   UserProfile
 } from "@gcchat/shared";
 
@@ -66,6 +67,10 @@ export interface ChatRepository {
   listMessages(channelId: string, limit: number): Promise<MessageView[]>;
   createMessage(
     input: { channelId: string; authorId: string } & CreateMessageRequest
+  ): Promise<MessageView>;
+  toggleMessageReaction(
+    messageId: string,
+    input: { userId: string } & ToggleMessageReactionRequest
   ): Promise<MessageView>;
   listCalendarEvents(viewerId: string): Promise<CalendarEventView[]>;
   createCalendarEvent(

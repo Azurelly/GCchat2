@@ -15,6 +15,7 @@ import {
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
+  type ToggleMessageReactionRequest,
   type UpdateAccountRequest,
   type UpdateCustomEmojiRequest,
   type UpdateUserBanRequest,
@@ -56,6 +57,7 @@ interface StoredMessage {
   id: string;
   channelId: string;
   authorId: string;
+  replyToId: string | null;
   content: string;
   createdAt: Date;
   editedAt: Date | null;
@@ -66,6 +68,13 @@ interface StoredMessage {
     mimeType: string;
     size: number;
   }>;
+}
+
+interface StoredMessageReaction {
+  messageId: string;
+  userId: string;
+  emoji: string;
+  createdAt: Date;
 }
 
 interface StoredCalendarEvent {
@@ -105,6 +114,7 @@ export class InMemoryChatRepository implements ChatRepository {
   private readonly profiles = new Map<string, StoredProfile>();
   private readonly memberships: StoredMembership[] = [];
   private readonly messages: StoredMessage[] = [];
+  private readonly messageReactions: StoredMessageReaction[] = [];
   private readonly calendarEvents: StoredCalendarEvent[] = [];
   private readonly customEmojis: StoredCustomEmoji[] = [];
 
@@ -363,10 +373,21 @@ export class InMemoryChatRepository implements ChatRepository {
   public async createMessage(
     input: { channelId: string; authorId: string } & CreateMessageRequest
   ): Promise<MessageView> {
+    const replyToId = input.replyToId ?? null;
+
+    if (replyToId) {
+      const replyTo = this.messages.find((candidate) => candidate.id === replyToId);
+
+      if (!replyTo || replyTo.channelId !== input.channelId) {
+        throw new HttpError(400, "Reply target must be in this channel");
+      }
+    }
+
     const message: StoredMessage = {
       id: randomUUID(),
       channelId: input.channelId,
       authorId: input.authorId,
+      replyToId,
       content: input.content,
       createdAt: new Date(Date.now() + this.messages.length),
       editedAt: null,
@@ -379,6 +400,47 @@ export class InMemoryChatRepository implements ChatRepository {
 
     for (const emoji of this.customEmojis) {
       emoji.useCount += counts.get(emoji.name) ?? 0;
+    }
+
+    return this.mapMessage(message);
+  }
+
+  public async toggleMessageReaction(
+    messageId: string,
+    input: { userId: string } & ToggleMessageReactionRequest
+  ): Promise<MessageView> {
+    const message = this.messages.find((candidate) => candidate.id === messageId);
+
+    if (!message || !(await this.userHasChannelAccess(input.userId, message.channelId))) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    const emoji = input.emoji.trim();
+    const existingIndex = this.messageReactions.findIndex(
+      (reaction) =>
+        reaction.messageId === messageId &&
+        reaction.userId === input.userId &&
+        reaction.emoji === emoji
+    );
+
+    if (existingIndex >= 0) {
+      this.messageReactions.splice(existingIndex, 1);
+    } else {
+      this.messageReactions.push({
+        messageId,
+        userId: input.userId,
+        emoji,
+        createdAt: new Date(Date.now() + this.messageReactions.length)
+      });
+      const customEmojiName = extractSingleCustomEmojiName(emoji);
+
+      if (customEmojiName) {
+        const customEmoji = this.customEmojis.find((candidate) => candidate.name === customEmojiName);
+
+        if (customEmoji) {
+          customEmoji.useCount += 1;
+        }
+      }
     }
 
     return this.mapMessage(message);
@@ -543,8 +605,59 @@ export class InMemoryChatRepository implements ChatRepository {
       createdAt: message.createdAt.toISOString(),
       editedAt: message.editedAt?.toISOString() ?? null,
       author: this.mapUser(user),
+      attachments: message.attachments,
+      replyTo: message.replyToId ? this.mapMessageReply(message.replyToId) : null,
+      reactions: this.mapMessageReactions(message.id)
+    };
+  }
+
+  private mapMessageReply(messageId: string) {
+    const message = this.messages.find((candidate) => candidate.id === messageId);
+
+    if (!message) {
+      return null;
+    }
+
+    const user = this.users.get(message.authorId);
+
+    if (!user) {
+      throw new Error("Missing author");
+    }
+
+    return {
+      id: message.id,
+      content: message.content,
+      createdAt: message.createdAt.toISOString(),
+      author: this.mapUser(user),
       attachments: message.attachments
     };
+  }
+
+  private mapMessageReactions(messageId: string) {
+    const grouped = new Map<string, { emoji: string; count: number; users: UserProfile[] }>();
+
+    for (const reaction of this.messageReactions.filter((candidate) => candidate.messageId === messageId)) {
+      const user = this.users.get(reaction.userId);
+
+      if (!user) {
+        continue;
+      }
+
+      const existing = grouped.get(reaction.emoji);
+
+      if (existing) {
+        existing.count += 1;
+        existing.users.push(this.mapUser(user));
+      } else {
+        grouped.set(reaction.emoji, {
+          emoji: reaction.emoji,
+          count: 1,
+          users: [this.mapUser(user)]
+        });
+      }
+    }
+
+    return [...grouped.values()];
   }
 
   private mapCalendarEvent(event: StoredCalendarEvent, viewerId: string): CalendarEventView {
@@ -634,6 +747,11 @@ function extractCustomEmojiNames(content: string) {
   return [...content.matchAll(/:([a-z0-9_]{2,32}):/gi)]
     .map((match) => match[1]?.toLowerCase())
     .filter((name): name is string => Boolean(name));
+}
+
+function extractSingleCustomEmojiName(content: string) {
+  const match = content.match(/^:([a-z0-9_]{2,32}):$/i);
+  return match?.[1]?.toLowerCase() ?? null;
 }
 
 function countByName(names: string[]) {

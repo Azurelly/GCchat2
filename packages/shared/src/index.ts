@@ -53,6 +53,22 @@ export interface MessageView {
   editedAt: string | null;
   author: UserProfile;
   attachments: AttachmentView[];
+  replyTo: MessageReplyView | null;
+  reactions: MessageReactionView[];
+}
+
+export interface MessageReplyView {
+  id: string;
+  content: string;
+  createdAt: string;
+  author: UserProfile;
+  attachments: AttachmentView[];
+}
+
+export interface MessageReactionView {
+  emoji: string;
+  count: number;
+  users: UserProfile[];
 }
 
 export interface CalendarEventOptInView {
@@ -125,12 +141,17 @@ export interface UpdateAccountRequest {
 
 export interface CreateMessageRequest {
   content: string;
+  replyToId?: string | null;
   attachments?: Array<{
     url: string;
     fileName: string;
     mimeType: string;
     size: number;
   }>;
+}
+
+export interface ToggleMessageReactionRequest {
+  emoji: string;
 }
 
 export interface CreateChannelRequest {
@@ -182,6 +203,7 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   "message:new": (message: MessageView) => void;
+  "message:updated": (message: MessageView) => void;
   "profile:updated": (profile: UserProfile) => void;
   "members:updated": (members: ServerMemberView[]) => void;
   "channels:updated": (channels: ChannelSummary[]) => void;

@@ -667,6 +667,91 @@ select:focus {
   opacity: 0.62;
 }
 
+.message-context-menu {
+  position: fixed;
+  z-index: 50;
+  width: 210px;
+  display: grid;
+  gap: 4px;
+  border: 1px solid #1e1f22;
+  border-radius: 8px;
+  padding: 8px;
+  color: #dbdee1;
+  background: #2b2d31;
+  box-shadow: 0 18px 64px rgba(0, 0, 0, 0.5);
+}
+
+.message-context-menu > button,
+.reaction-menu header button {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 5px;
+  padding: 0 10px;
+  color: #dbdee1;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 800;
+  text-align: left;
+}
+
+.message-context-menu > button:hover,
+.reaction-menu header button:hover {
+  color: #fff;
+  background: #3f4147;
+}
+
+.reaction-menu {
+  display: grid;
+  gap: 8px;
+}
+
+.reaction-menu header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #f2f3f5;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.reaction-menu header button {
+  width: 30px;
+  min-height: 30px;
+  justify-content: center;
+  padding: 0;
+}
+
+.reaction-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.reaction-choice-grid button {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: #f2f3f5;
+  background: #35373c;
+  cursor: pointer;
+  font-size: 22px;
+}
+
+.reaction-choice-grid button:hover {
+  background: #45474f;
+}
+
+.reaction-choice-grid img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
 .avatar-button {
   width: 44px;
   height: 44px;
@@ -778,6 +863,40 @@ select:focus {
   font-size: 12px;
 }
 
+.message-reply-preview {
+  max-width: min(560px, 100%);
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 2px;
+  padding: 0;
+  color: #b5bac1;
+  background: transparent;
+  cursor: pointer;
+}
+
+.message-reply-preview:hover span,
+.message-reply-preview:hover small {
+  color: #f2f3f5;
+}
+
+.message-reply-preview span {
+  flex: 0 0 auto;
+  color: #dbdee1;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.message-reply-preview small {
+  min-width: 0;
+  overflow: hidden;
+  color: #949ba4;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .message-body p {
   margin: 0;
   color: #dbdee1;
@@ -807,6 +926,42 @@ select:focus {
 .mention-pill:hover {
   color: #fff;
   background: rgba(88, 101, 242, 0.6);
+}
+
+.message-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.message-reactions button {
+  min-width: 42px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 8px;
+  color: #dbdee1;
+  background: #2b2d31;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.message-reactions button:hover,
+.message-reactions button.active {
+  border-color: #5865f2;
+  color: #dee4ff;
+  background: rgba(88, 101, 242, 0.24);
+}
+
+.message-reactions img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
 }
 
 .message-event-embed {
@@ -868,9 +1023,51 @@ select:focus {
   grid-row: 3;
   position: relative;
   min-height: 68px;
-  display: flex;
-  align-items: center;
+  display: grid;
+  align-content: end;
+  gap: 0;
   padding: 0 16px 18px;
+}
+
+.composer-reply-preview {
+  min-width: 0;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 8px 8px 0 0;
+  padding: 0 8px 0 14px;
+  color: #b5bac1;
+  background: #2b2d31;
+  font-size: 13px;
+}
+
+.composer-reply-preview strong {
+  color: #f2f3f5;
+}
+
+.composer-reply-preview small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-reply-preview button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: #b5bac1;
+  background: transparent;
+  cursor: pointer;
+}
+
+.composer-reply-preview button:hover {
+  color: #fff;
+  background: #3f4147;
 }
 
 .composer-bar {
@@ -883,6 +1080,10 @@ select:focus {
   border-radius: 8px;
   background: #383a40;
   padding: 4px;
+}
+
+.composer-reply-preview + .composer-bar {
+  border-radius: 0 0 8px 8px;
 }
 
 .composer-tool,
@@ -1215,17 +1416,21 @@ select:focus {
 
 .emoji-admin-grid {
   min-height: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  display: flex;
+  align-items: stretch;
   gap: 10px;
-  overflow-y: auto;
-  padding-right: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 4px 8px 0;
 }
 
 .emoji-admin-grid button {
-  min-width: 0;
+  flex: 0 0 150px;
+  min-width: 150px;
+  min-height: 176px;
   display: grid;
   justify-items: center;
+  align-content: center;
   gap: 8px;
   border-radius: 8px;
   padding: 14px 10px;
@@ -2200,6 +2405,9 @@ select:focus {
 .theme-light .settings-card,
 .theme-light .settings-toggle,
 .theme-light .message-event-embed,
+.theme-light .message-context-menu,
+.theme-light .message-reactions button,
+.theme-light .composer-reply-preview,
 .theme-light .emoji-create-card,
 .theme-light .emoji-library-card,
 .theme-light .emoji-edit-modal {
@@ -2219,7 +2427,8 @@ select:focus {
 .theme-light .emoji-picker-menu,
 .theme-light .attachment-menu,
 .theme-light .mention-menu,
-.theme-light .event-picker-menu {
+.theme-light .event-picker-menu,
+.theme-light .reaction-choice-grid button {
   color: #1f2328;
   background: #ffffff;
   border-color: #cfd6e2;
@@ -2227,6 +2436,7 @@ select:focus {
 
 .theme-light .message-body p,
 .theme-light .chat-title,
+.theme-light .message-reply-preview span,
 .theme-light .calendar-event-card p,
 .theme-light .settings-toggle strong {
   color: #1f2328;

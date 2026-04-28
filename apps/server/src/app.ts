@@ -32,6 +32,7 @@ import {
   loginSchema,
   registerSchema,
   setCalendarEventOptInSchema,
+  toggleMessageReactionSchema,
   updateAccountSchema,
   updateCustomEmojiSchema,
   updateUserBanSchema,
@@ -41,6 +42,7 @@ import {
 
 export interface RealtimePublisher {
   emitMessage(message: MessageView): void;
+  emitMessageUpdated(message: MessageView): void;
   emitProfileUpdated(profile: UserProfile): void;
   emitMembersUpdated(serverId: string, members: ServerMemberView[]): void;
   emitChannelsUpdated(serverId: string, channels: ChannelSummary[]): void;
@@ -313,6 +315,7 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
         channelId,
         authorId: user.id,
         content: parsed.content,
+        replyToId: parsed.replyToId,
         attachments: parsed.attachments
       });
 
@@ -321,6 +324,22 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
         realtime?.emitEmojisUpdated(await repo.listCustomEmojis());
       }
       res.status(201).json(message);
+    })
+  );
+
+  app.post(
+    "/messages/:id/reactions",
+    asyncRoute(async (req, res) => {
+      const user = (req as AuthedRequest).user;
+      const messageId = requiredParam(req, "id");
+      const parsed = toggleMessageReactionSchema.parse(req.body);
+      const message = await repo.toggleMessageReaction(messageId, {
+        userId: user.id,
+        emoji: parsed.emoji
+      });
+
+      realtime?.emitMessageUpdated(message);
+      res.json(message);
     })
   );
 

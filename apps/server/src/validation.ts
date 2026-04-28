@@ -47,11 +47,18 @@ export const attachmentInputSchema = z.object({
 export const createMessageSchema = z
   .object({
     content: z.string().trim().max(4000).default(""),
+    replyToId: z.string().min(1).max(80).nullable().optional(),
     attachments: z.array(attachmentInputSchema).max(4).default([])
   })
   .refine((value) => value.content.length > 0 || value.attachments.length > 0, {
     message: "Message must include text or an attachment."
   });
+
+export const toggleMessageReactionSchema = z
+  .object({
+    emoji: z.string().trim().min(1).max(80)
+  })
+  .strict();
 
 export const channelNameSchema = z
   .string()

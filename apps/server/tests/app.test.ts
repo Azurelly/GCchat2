@@ -155,6 +155,52 @@ describe("messages API", () => {
     ]);
     expect(history.body[1].attachments[0].fileName).toBe("image.png");
   });
+
+  it("persists replies and toggles reactions per user", async () => {
+    const { app } = makeApp();
+    const alex = await request(app)
+      .post("/auth/register")
+      .send({ username: "Alex", password: "password123" })
+      .expect(201);
+    const blair = await request(app)
+      .post("/auth/register")
+      .send({ username: "Blair", password: "password123" })
+      .expect(201);
+
+    const channelId = alex.body.channel.id as string;
+    const parent = await request(app)
+      .post(`/channels/${channelId}/messages`)
+      .set("authorization", `Bearer ${alex.body.token}`)
+      .send({ content: "Food run?" })
+      .expect(201);
+
+    const reply = await request(app)
+      .post(`/channels/${channelId}/messages`)
+      .set("authorization", `Bearer ${blair.body.token}`)
+      .send({ content: "I'm in", replyToId: parent.body.id })
+      .expect(201);
+
+    expect(reply.body.replyTo.content).toBe("Food run?");
+    expect(reply.body.replyTo.author.username).toBe("alex");
+
+    const reacted = await request(app)
+      .post(`/messages/${reply.body.id}/reactions`)
+      .set("authorization", `Bearer ${alex.body.token}`)
+      .send({ emoji: "👍" })
+      .expect(200);
+
+    expect(reacted.body.reactions).toHaveLength(1);
+    expect(reacted.body.reactions[0].count).toBe(1);
+    expect(reacted.body.reactions[0].users[0].username).toBe("alex");
+
+    const removed = await request(app)
+      .post(`/messages/${reply.body.id}/reactions`)
+      .set("authorization", `Bearer ${alex.body.token}`)
+      .send({ emoji: "👍" })
+      .expect(200);
+
+    expect(removed.body.reactions).toEqual([]);
+  });
 });
 
 describe("custom emoji API", () => {

@@ -12,10 +12,13 @@ import {
   type CreateCustomEmojiRequest,
   type CreateMessageRequest,
   type DeleteChannelRequest,
+  type MessageReactionView,
+  type MessageReplyView,
   type MessageView,
   type SetCalendarEventOptInRequest,
   type ServerMemberView,
   type ServerSummary,
+  type ToggleMessageReactionRequest,
   type UpdateAccountRequest,
   type UpdateCustomEmojiRequest,
   type UpdateUserBanRequest,
@@ -48,6 +51,22 @@ type MessageWithRelations = {
   editedAt: Date | null;
   author: UserWithProfile;
   attachments: AttachmentView[];
+  replyTo: MessageReplyWithRelations | null;
+  reactions: MessageReactionWithRelations[];
+};
+
+type MessageReplyWithRelations = {
+  id: string;
+  content: string;
+  createdAt: Date;
+  author: UserWithProfile;
+  attachments: AttachmentView[];
+};
+
+type MessageReactionWithRelations = {
+  emoji: string;
+  createdAt: Date;
+  user: UserWithProfile;
 };
 
 type CalendarEventWithRelations = {
@@ -85,6 +104,21 @@ const calendarEventInclude = {
 
 const customEmojiInclude = {
   createdBy: { include: { profile: true } }
+};
+
+const messageInclude = {
+  author: { include: { profile: true } },
+  attachments: { orderBy: { createdAt: "asc" as const } },
+  replyTo: {
+    include: {
+      author: { include: { profile: true } },
+      attachments: { orderBy: { createdAt: "asc" as const } }
+    }
+  },
+  reactions: {
+    include: { user: { include: { profile: true } } },
+    orderBy: { createdAt: "asc" as const }
+  }
 };
 
 export class PrismaChatRepository implements ChatRepository {
@@ -413,10 +447,7 @@ export class PrismaChatRepository implements ChatRepository {
   public async listMessages(channelId: string, limit: number): Promise<MessageView[]> {
     const messages = await this.prisma.message.findMany({
       where: { channelId },
-      include: {
-        author: { include: { profile: true } },
-        attachments: { orderBy: { createdAt: "asc" } }
-      },
+      include: messageInclude,
       orderBy: { createdAt: "desc" },
       take: limit
     });
@@ -428,11 +459,24 @@ export class PrismaChatRepository implements ChatRepository {
     input: { channelId: string; authorId: string } & CreateMessageRequest
   ) {
     const emojiNames = extractCustomEmojiNames(input.content);
+    const replyToId = input.replyToId ?? null;
+
+    if (replyToId) {
+      const replyTo = await this.prisma.message.findUnique({
+        where: { id: replyToId },
+        select: { channelId: true }
+      });
+
+      if (!replyTo || replyTo.channelId !== input.channelId) {
+        throw new HttpError(400, "Reply target must be in this channel");
+      }
+    }
 
     const message = await this.prisma.message.create({
       data: {
         channelId: input.channelId,
         authorId: input.authorId,
+        replyToId,
         content: input.content,
         attachments: {
           create: input.attachments?.map((attachment) => ({
@@ -443,10 +487,7 @@ export class PrismaChatRepository implements ChatRepository {
           }))
         }
       },
-      include: {
-        author: { include: { profile: true } },
-        attachments: { orderBy: { createdAt: "asc" } }
-      }
+      include: messageInclude
     });
 
     if (emojiNames.length > 0) {
@@ -462,6 +503,74 @@ export class PrismaChatRepository implements ChatRepository {
     }
 
     return mapMessage(message);
+  }
+
+  public async toggleMessageReaction(
+    messageId: string,
+    input: { userId: string } & ToggleMessageReactionRequest
+  ): Promise<MessageView> {
+    const emoji = input.emoji.trim();
+
+    if (!emoji) {
+      throw new HttpError(400, "Reaction emoji is required");
+    }
+
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        channel: {
+          server: {
+            memberships: { some: { userId: input.userId } }
+          }
+        }
+      },
+      select: { id: true }
+    });
+
+    if (!message) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    const existing = await this.prisma.messageReaction.findUnique({
+      where: {
+        messageId_userId_emoji: {
+          messageId,
+          userId: input.userId,
+          emoji
+        }
+      }
+    });
+
+    if (existing) {
+      await this.prisma.messageReaction.delete({ where: { id: existing.id } });
+    } else {
+      await this.prisma.messageReaction.create({
+        data: {
+          messageId,
+          userId: input.userId,
+          emoji
+        }
+      });
+      const customEmojiName = extractSingleCustomEmojiName(emoji);
+
+      if (customEmojiName) {
+        await this.prisma.customEmoji.updateMany({
+          where: { name: customEmojiName },
+          data: { useCount: { increment: 1 } }
+        });
+      }
+    }
+
+    const updated = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: messageInclude
+    });
+
+    if (!updated) {
+      throw new HttpError(404, "Message not found");
+    }
+
+    return mapMessage(updated);
   }
 
   public async listCalendarEvents(viewerId: string): Promise<CalendarEventView[]> {
@@ -683,14 +792,52 @@ function mapMessage(message: MessageWithRelations): MessageView {
     createdAt: message.createdAt.toISOString(),
     editedAt: message.editedAt?.toISOString() ?? null,
     author: mapUserProfile(message.author),
-    attachments: message.attachments.map((attachment) => ({
-      id: attachment.id,
-      url: attachment.url,
-      fileName: attachment.fileName,
-      mimeType: attachment.mimeType,
-      size: attachment.size
-    }))
+    attachments: message.attachments.map(mapAttachment),
+    replyTo: message.replyTo ? mapMessageReply(message.replyTo) : null,
+    reactions: mapMessageReactions(message.reactions)
   };
+}
+
+function mapMessageReply(message: MessageReplyWithRelations): MessageReplyView {
+  return {
+    id: message.id,
+    content: message.content,
+    createdAt: message.createdAt.toISOString(),
+    author: mapUserProfile(message.author),
+    attachments: message.attachments.map(mapAttachment)
+  };
+}
+
+function mapAttachment(attachment: AttachmentView): AttachmentView {
+  return {
+    id: attachment.id,
+    url: attachment.url,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType,
+    size: attachment.size
+  };
+}
+
+function mapMessageReactions(reactions: MessageReactionWithRelations[]): MessageReactionView[] {
+  const grouped = new Map<string, MessageReactionView>();
+
+  for (const reaction of reactions) {
+    const user = mapUserProfile(reaction.user);
+    const existing = grouped.get(reaction.emoji);
+
+    if (existing) {
+      existing.count += 1;
+      existing.users.push(user);
+    } else {
+      grouped.set(reaction.emoji, {
+        emoji: reaction.emoji,
+        count: 1,
+        users: [user]
+      });
+    }
+  }
+
+  return [...grouped.values()];
 }
 
 function mapCalendarEvent(
@@ -737,6 +884,11 @@ function extractCustomEmojiNames(content: string) {
   return [...content.matchAll(/:([a-z0-9_]{2,32}):/gi)]
     .map((match) => match[1]?.toLowerCase())
     .filter((name): name is string => Boolean(name));
+}
+
+function extractSingleCustomEmojiName(content: string) {
+  const match = content.match(/^:([a-z0-9_]{2,32}):$/i);
+  return match?.[1]?.toLowerCase() ?? null;
 }
 
 function countByName(names: string[]) {

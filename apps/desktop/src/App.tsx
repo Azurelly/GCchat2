@@ -31,6 +31,7 @@ import {
   Paperclip,
   Pencil,
   RefreshCw,
+  Reply,
   Search,
   Send,
   Settings,
@@ -133,6 +134,7 @@ export function App() {
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
   const [customEmojis, setCustomEmojis] = useState<CustomEmojiView[]>([]);
   const [calendarFocusEventId, setCalendarFocusEventId] = useState<string | null>(null);
+  const [replyToMessage, setReplyToMessage] = useState<MessageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [banned, setBanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,6 +148,7 @@ export function App() {
   const [notificationPrefs, setNotificationPrefs] = useState(loadNotificationPreferences);
   const [appearancePrefs, setAppearancePrefs] = useState(loadAppearancePreferences);
   const [toasts, setToasts] = useState<Array<{ id: string; message: MessageView }>>([]);
+  const [socket, setSocket] = useState<ChatSocket | null>(null);
   const socketRef = useRef<ChatSocket | null>(null);
   const activeChannel = useMemo(() => {
     if (!session) {
@@ -225,6 +228,7 @@ export function App() {
     if (!session) {
       socketRef.current?.disconnect();
       socketRef.current = null;
+      setSocket(null);
       setMessagesByChannel({});
       setCalendarEvents([]);
       setCustomEmojis([]);
@@ -264,7 +268,7 @@ export function App() {
     });
 
     socket.on("message:new", (message) => {
-      setMessagesByChannel((current) => upsertMessageInChannel(current, message));
+      setMessagesByChannel((current) => upsertMessageInChannel(current, normalizeMessage(message)));
 
       if (
         session.user.id !== message.author.id &&
@@ -273,6 +277,10 @@ export function App() {
       ) {
         showMentionNotification(message, notificationPrefs, setToasts);
       }
+    });
+
+    socket.on("message:updated", (message) => {
+      setMessagesByChannel((current) => replaceMessageInChannel(current, message.id, normalizeMessage(message)));
     });
 
     socket.on("profile:updated", (profile) => {
@@ -319,10 +327,12 @@ export function App() {
 
     socket.on("connect_error", (socketError) => setError(socketError.message));
     socketRef.current = socket;
+    setSocket(socket);
 
     return () => {
       active = false;
       socket.disconnect();
+      setSocket(null);
     };
   }, [notificationPrefs, session?.token]);
 
@@ -345,7 +355,7 @@ export function App() {
         if (active) {
           setMessagesByChannel((current) => ({
             ...current,
-            [activeChannel.id]: history
+            [activeChannel.id]: history.map(normalizeMessage)
           }));
         }
       })
@@ -355,6 +365,10 @@ export function App() {
       active = false;
     };
   }, [activeChannel?.id, messagesByChannel, session]);
+
+  useEffect(() => {
+    setReplyToMessage(null);
+  }, [activeChannel?.id]);
 
   const handleAuth = (auth: AuthResponse) => {
     localStorage.setItem(tokenStorageKey, auth.token);
@@ -435,6 +449,32 @@ export function App() {
 
   const handleConfirmedMessage = (temporaryId: string, message: MessageView) => {
     setMessagesByChannel((current) => replaceMessageInChannel(current, temporaryId, message));
+  };
+
+  const handleFailedMessage = (temporaryId: string, channelId: string) => {
+    setMessagesByChannel((current) => removeMessageFromChannel(current, channelId, temporaryId));
+  };
+
+  const handleReaction = async (message: MessageView, emoji: string) => {
+    if (!session || message.id.startsWith("temp-")) {
+      return;
+    }
+
+    setMessagesByChannel((current) => applyReactionOptimistically(current, message, emoji, session.user));
+    setError(null);
+
+    try {
+      const updated = await api.toggleMessageReaction(message.id, { emoji });
+      setMessagesByChannel((current) => replaceMessageInChannel(current, message.id, updated));
+    } catch (requestError) {
+      setError(getMessage(requestError));
+      void api.getMessages(message.channelId).then((history) => {
+        setMessagesByChannel((current) => ({
+          ...current,
+          [message.channelId]: history.map(normalizeMessage)
+        }));
+      });
+    }
   };
 
   const handleOpenCalendarEvent = (eventId: string) => {
@@ -546,6 +586,8 @@ export function App() {
             customEmojis={customEmojis}
             currentUser={session.user}
             onProfile={setSelectedProfile}
+            onReply={setReplyToMessage}
+            onReact={(message, emoji) => void handleReaction(message, emoji)}
             onEventUpdated={handleCalendarEventUpdated}
             onOpenCalendarEvent={handleOpenCalendarEvent}
             onError={setError}
@@ -556,10 +598,13 @@ export function App() {
             members={session.members}
             calendarEvents={calendarEvents}
             customEmojis={customEmojis}
-            socket={socketRef.current}
+            replyTo={replyToMessage}
+            socket={socket}
+            onCancelReply={() => setReplyToMessage(null)}
             onError={setError}
             onOptimisticMessage={handleOptimisticMessage}
             onConfirmedMessage={handleConfirmedMessage}
+            onFailedMessage={handleFailedMessage}
           />
         </main>
       ) : activeFeature === "calendar" ? (
@@ -949,6 +994,8 @@ function MessageList({
   customEmojis,
   currentUser,
   onProfile,
+  onReply,
+  onReact,
   onEventUpdated,
   onOpenCalendarEvent,
   onError
@@ -959,15 +1006,44 @@ function MessageList({
   customEmojis: CustomEmojiView[];
   currentUser: UserProfile;
   onProfile: (profile: UserProfile) => void;
+  onReply: (message: MessageView) => void;
+  onReact: (message: MessageView, emoji: string) => void;
   onEventUpdated: (event: CalendarEventView) => void;
   onOpenCalendarEvent: (eventId: string) => void;
   onError: (error: string | null) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    message: MessageView;
+    x: number;
+    y: number;
+    mode: "actions" | "reactions";
+  } | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages.length]);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const close = () => setContextMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        close();
+      }
+    };
+
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [contextMenu]);
 
   if (messages.length === 0) {
     return (
@@ -988,6 +1064,19 @@ function MessageList({
             messageMentionsUser(message.content, currentUser) ? "mentioned" : ""
           }`}
           key={message.id}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            if (message.id.startsWith("temp-")) {
+              return;
+            }
+
+            setContextMenu({
+              message,
+              x: event.clientX,
+              y: event.clientY,
+              mode: "actions"
+            });
+          }}
         >
           <button className="avatar-button" onClick={() => onProfile(message.author)}>
             <Avatar profile={message.author} size="md" />
@@ -997,6 +1086,13 @@ function MessageList({
               <button onClick={() => onProfile(message.author)}>{message.author.displayName}</button>
               <time>{formatTime(message.createdAt)}</time>
             </div>
+            {message.replyTo ? (
+              <button className="message-reply-preview" onClick={() => onProfile(message.replyTo!.author)}>
+                <Reply size={14} />
+                <span>{message.replyTo.author.displayName}</span>
+                <small>{summarizeReply(message.replyTo)}</small>
+              </button>
+            ) : null}
             {renderMessageText(stripEventTokens(message.content), members, customEmojis, onProfile)}
             {extractEventIds(message.content).map((eventId) => {
               const event = calendarEvents.find((candidate) => candidate.id === eventId);
@@ -1030,12 +1126,140 @@ function MessageList({
                 ))}
               </div>
             ) : null}
+            {message.reactions.length > 0 ? (
+              <div className="message-reactions">
+                {message.reactions.map((reaction) => {
+                  const reacted = reaction.users.some((user) => user.id === currentUser.id);
+
+                  return (
+                    <button
+                      className={reacted ? "active" : ""}
+                      key={reaction.emoji}
+                      type="button"
+                      onClick={() => onReact(message, reaction.emoji)}
+                      title={reaction.users.map((user) => user.displayName).join(", ")}
+                    >
+                      <ReactionEmoji emoji={reaction.emoji} customEmojis={customEmojis} />
+                      <span>{reaction.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
         </article>
       ))}
       <div ref={bottomRef} />
+      {contextMenu ? (
+        <MessageContextMenu
+          state={contextMenu}
+          customEmojis={customEmojis}
+          onClose={() => setContextMenu(null)}
+          onReply={(message) => {
+            onReply(message);
+            setContextMenu(null);
+          }}
+          onReact={(message, emoji) => {
+            onReact(message, emoji);
+            setContextMenu(null);
+          }}
+          onReactionMode={() =>
+            setContextMenu((current) => (current ? { ...current, mode: "reactions" } : current))
+          }
+        />
+      ) : null}
     </section>
   );
+}
+
+function MessageContextMenu({
+  state,
+  customEmojis,
+  onClose,
+  onReply,
+  onReact,
+  onReactionMode
+}: {
+  state: { message: MessageView; x: number; y: number; mode: "actions" | "reactions" };
+  customEmojis: CustomEmojiView[];
+  onClose: () => void;
+  onReply: (message: MessageView) => void;
+  onReact: (message: MessageView, emoji: string) => void;
+  onReactionMode: () => void;
+}) {
+  const quickEmojis = defaultEmojis.slice(0, 12);
+
+  return (
+    <div
+      className="message-context-menu"
+      style={{ left: state.x, top: state.y }}
+      onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {state.mode === "actions" ? (
+        <>
+          <button type="button" onClick={() => onReply(state.message)}>
+            <Reply size={18} />
+            Reply
+          </button>
+          <button type="button" onClick={onReactionMode}>
+            <SmilePlus size={18} />
+            Add Reaction
+          </button>
+        </>
+      ) : (
+        <div className="reaction-menu">
+          <header>
+            <button type="button" onClick={onClose}>
+              <ChevronLeft size={17} />
+            </button>
+            <span>Add Reaction</span>
+          </header>
+          <div className="reaction-choice-grid">
+            {quickEmojis.map((emoji) => (
+              <button
+                type="button"
+                key={emoji.name}
+                onClick={() => onReact(state.message, emoji.emoji)}
+                title={emoji.name}
+              >
+                {emoji.emoji}
+              </button>
+            ))}
+            {customEmojis.map((emoji) => (
+              <button
+                type="button"
+                key={emoji.id}
+                onClick={() => onReact(state.message, `:${emoji.name}:`)}
+                title={`:${emoji.name}:`}
+              >
+                <img src={emoji.imageUrl} alt="" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReactionEmoji({
+  emoji,
+  customEmojis
+}: {
+  emoji: string;
+  customEmojis: CustomEmojiView[];
+}) {
+  if (emoji.startsWith(":") && emoji.endsWith(":")) {
+    const name = emoji.slice(1, -1).toLowerCase();
+    const customEmoji = customEmojis.find((candidate) => candidate.name === name);
+
+    if (customEmoji) {
+      return <img src={customEmoji.imageUrl} alt={emoji} />;
+    }
+  }
+
+  return <span>{emoji}</span>;
 }
 
 function MessageEventEmbed({
@@ -1092,20 +1316,26 @@ function Composer({
   members,
   calendarEvents,
   customEmojis,
+  replyTo,
   socket,
+  onCancelReply,
   onError,
   onOptimisticMessage,
-  onConfirmedMessage
+  onConfirmedMessage,
+  onFailedMessage
 }: {
   channel: ChannelSummary;
   currentUser: UserProfile;
   members: ServerMemberView[];
   calendarEvents: CalendarEventView[];
   customEmojis: CustomEmojiView[];
+  replyTo: MessageView | null;
   socket: ChatSocket | null;
+  onCancelReply: () => void;
   onError: (error: string | null) => void;
   onOptimisticMessage: (message: MessageView) => void;
   onConfirmedMessage: (temporaryId: string, message: MessageView) => void;
+  onFailedMessage: (temporaryId: string, channelId: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -1154,20 +1384,61 @@ function Composer({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
 
-    if (!canSend || sending) {
+    if (!canSend) {
       return;
     }
 
-    setSending(true);
     onError(null);
 
     const temporaryId = `temp-${crypto.randomUUID()}`;
+    const selectedFile = file;
+    const selectedEvent = attachedEvent;
+    const selectedReply = replyTo;
+    const content = `${draft.trim()}${selectedEvent ? `\n${createEventToken(selectedEvent.id)}` : ""}`.trim();
+    const localAttachmentUrl = selectedFile ? URL.createObjectURL(selectedFile) : null;
+    const optimisticAttachments: MessageView["attachments"] = selectedFile
+      ? [
+          {
+            id: `${temporaryId}-attachment-0`,
+            url: localAttachmentUrl!,
+            fileName: selectedFile.name,
+            mimeType: selectedFile.type || "application/octet-stream",
+            size: selectedFile.size
+          }
+        ]
+      : [];
+    const optimisticMessage: MessageView = {
+      id: temporaryId,
+      channelId: channel.id,
+      content,
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+      author: currentUser,
+      attachments: optimisticAttachments,
+      replyTo: selectedReply ? createReplyPreview(selectedReply) : null,
+      reactions: []
+    };
+
+    onOptimisticMessage(optimisticMessage);
+    setDraft("");
+    setFile(null);
+    setAttachedEvent(null);
+    setAttachmentMenuOpen(false);
+    setEventPickerOpen(false);
+    setEmojiPickerOpen(false);
+    setEmojiSearch("");
+    onCancelReply();
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
 
     try {
+      setSending(Boolean(selectedFile));
       const attachments: CreateMessageRequest["attachments"] = [];
 
-      if (file) {
-        const uploaded = await api.upload(file, "attachment");
+      if (selectedFile) {
+        const uploaded = await api.upload(selectedFile, "attachment");
         attachments.push({
           url: uploaded.url,
           fileName: uploaded.fileName,
@@ -1176,27 +1447,12 @@ function Composer({
         });
       }
 
-      const content = `${draft.trim()}${attachedEvent ? `\n${createEventToken(attachedEvent.id)}` : ""}`.trim();
       const payload = {
         channelId: channel.id,
         content,
+        replyToId: selectedReply?.id ?? null,
         attachments
       };
-      const optimisticMessage: MessageView = {
-        id: temporaryId,
-        channelId: channel.id,
-        content,
-        createdAt: new Date().toISOString(),
-        editedAt: null,
-        author: currentUser,
-        attachments:
-          attachments?.map((attachment, index) => ({
-            id: `${temporaryId}-attachment-${index}`,
-            ...attachment
-          })) ?? []
-      };
-
-      onOptimisticMessage(optimisticMessage);
 
       let confirmed: MessageView;
       if (socket?.connected) {
@@ -1204,26 +1460,20 @@ function Composer({
       } else {
         confirmed = await api.createMessage(channel.id, {
           content: payload.content,
+          replyToId: payload.replyToId,
           attachments
         });
       }
 
       onConfirmedMessage(temporaryId, confirmed);
-
-      setDraft("");
-      setFile(null);
-      setAttachedEvent(null);
-      setAttachmentMenuOpen(false);
-      setEventPickerOpen(false);
-      setEmojiPickerOpen(false);
-      setEmojiSearch("");
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
     } catch (requestError) {
+      onFailedMessage(temporaryId, channel.id);
       onError(getMessage(requestError));
     } finally {
+      if (localAttachmentUrl) {
+        URL.revokeObjectURL(localAttachmentUrl);
+      }
+
       setSending(false);
     }
   };
@@ -1321,6 +1571,18 @@ function Composer({
           onCustomSelect={applyCustomEmoji}
         />
       ) : null}
+      {replyTo ? (
+        <div className="composer-reply-preview">
+          <Reply size={15} />
+          <span>
+            Replying to <strong>{replyTo.author.displayName}</strong>
+          </span>
+          <small>{summarizeReply(createReplyPreview(replyTo))}</small>
+          <button type="button" onClick={onCancelReply} aria-label="Cancel reply">
+            <X size={15} />
+          </button>
+        </div>
+      ) : null}
       <div className="composer-bar">
         <button
           type="button"
@@ -1367,7 +1629,7 @@ function Composer({
         >
           <Smile size={22} />
         </button>
-        <button className="composer-send" disabled={!canSend || sending} aria-label="Send">
+        <button className="composer-send" disabled={!canSend} aria-label="Send">
           {sending ? <Loader2 className="spin" size={20} /> : <Send size={20} />}
         </button>
       </div>
@@ -2640,20 +2902,21 @@ function upsertMessageInChannel(
   current: Record<string, MessageView[]>,
   message: MessageView
 ): Record<string, MessageView[]> {
-  const channelMessages = current[message.channelId] ?? [];
+  const normalized = normalizeMessage(message);
+  const channelMessages = current[normalized.channelId] ?? [];
   const withoutTempDuplicate = channelMessages.filter(
     (existing) =>
-      existing.id !== message.id &&
+      existing.id !== normalized.id &&
       !(
         existing.id.startsWith("temp-") &&
-        existing.author.id === message.author.id &&
-        existing.content === message.content
+        existing.author.id === normalized.author.id &&
+        existing.content === normalized.content
       )
   );
 
   return {
     ...current,
-    [message.channelId]: [...withoutTempDuplicate, message].sort(
+    [normalized.channelId]: [...withoutTempDuplicate, normalized].sort(
       (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)
     )
   };
@@ -2664,17 +2927,80 @@ function replaceMessageInChannel(
   temporaryId: string,
   message: MessageView
 ): Record<string, MessageView[]> {
-  const channelMessages = current[message.channelId] ?? [];
+  const normalized = normalizeMessage(message);
+  const channelMessages = current[normalized.channelId] ?? [];
   const replaced = channelMessages.some((existing) => existing.id === temporaryId)
-    ? channelMessages.map((existing) => (existing.id === temporaryId ? message : existing))
-    : [...channelMessages, message];
+    ? channelMessages.map((existing) => (existing.id === temporaryId ? normalized : existing))
+    : [...channelMessages, normalized];
 
   return {
     ...current,
-    [message.channelId]: replaced
+    [normalized.channelId]: replaced
       .filter((existing, index, list) => list.findIndex((candidate) => candidate.id === existing.id) === index)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
   };
+}
+
+function normalizeMessage(message: MessageView): MessageView {
+  return {
+    ...message,
+    replyTo: message.replyTo ?? null,
+    reactions: message.reactions ?? []
+  };
+}
+
+function removeMessageFromChannel(
+  current: Record<string, MessageView[]>,
+  channelId: string,
+  messageId: string
+): Record<string, MessageView[]> {
+  return {
+    ...current,
+    [channelId]: (current[channelId] ?? []).filter((message) => message.id !== messageId)
+  };
+}
+
+function applyReactionOptimistically(
+  current: Record<string, MessageView[]>,
+  message: MessageView,
+  emoji: string,
+  user: UserProfile
+): Record<string, MessageView[]> {
+  const nextMessage: MessageView = {
+    ...message,
+    reactions: toggleReactionForUser(message.reactions, emoji, user)
+  };
+
+  return replaceMessageInChannel(current, message.id, nextMessage);
+}
+
+function toggleReactionForUser(
+  reactions: MessageView["reactions"],
+  emoji: string,
+  user: UserProfile
+): MessageView["reactions"] {
+  const existing = reactions.find((reaction) => reaction.emoji === emoji);
+
+  if (!existing) {
+    return [...reactions, { emoji, count: 1, users: [user] }];
+  }
+
+  const alreadyReacted = existing.users.some((candidate) => candidate.id === user.id);
+  const users = alreadyReacted
+    ? existing.users.filter((candidate) => candidate.id !== user.id)
+    : [...existing.users, user];
+
+  return reactions
+    .map((reaction) =>
+      reaction.emoji === emoji
+        ? {
+            ...reaction,
+            count: users.length,
+            users
+          }
+        : reaction
+    )
+    .filter((reaction) => reaction.count > 0);
 }
 
 function applyProfileUpdateToMessages(
@@ -2685,10 +3011,25 @@ function applyProfileUpdateToMessages(
     Object.entries(messagesByChannel).map(([channelId, messages]) => [
       channelId,
       messages.map((message) =>
-        message.author.id === profile.id ? { ...message, author: profile } : message
+        applyProfileUpdateToMessage(message, profile)
       )
     ])
   );
+}
+
+function applyProfileUpdateToMessage(message: MessageView, profile: UserProfile): MessageView {
+  return {
+    ...message,
+    author: message.author.id === profile.id ? profile : message.author,
+    replyTo:
+      message.replyTo && message.replyTo.author.id === profile.id
+        ? { ...message.replyTo, author: profile }
+        : message.replyTo,
+    reactions: message.reactions.map((reaction) => ({
+      ...reaction,
+      users: reaction.users.map((user) => (user.id === profile.id ? profile : user))
+    }))
+  };
 }
 
 function applyProfileUpdateToCalendarEvents(
@@ -2794,6 +3135,30 @@ function renderMessageText(
       })}
     </p>
   );
+}
+
+function summarizeReply(reply: NonNullable<MessageView["replyTo"]>) {
+  const text = stripEventTokens(reply.content).trim();
+
+  if (text) {
+    return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+
+  if (reply.attachments.length > 0) {
+    return reply.attachments[0]?.fileName ?? "Attachment";
+  }
+
+  return "Message";
+}
+
+function createReplyPreview(message: MessageView): NonNullable<MessageView["replyTo"]> {
+  return {
+    id: message.id,
+    content: message.content,
+    createdAt: message.createdAt,
+    author: message.author,
+    attachments: message.attachments
+  };
 }
 
 function getMentionQuery(value: string) {

@@ -100,6 +100,7 @@ export function attachRealtime(
           channelId: payload.channelId,
           authorId: socket.data.user.id,
           content: parsed.content,
+          replyToId: parsed.replyToId,
           attachments: parsed.attachments
         });
 
@@ -116,6 +117,10 @@ export function attachRealtime(
 
   realtime.emitMessage = (message) => {
     io.to(channelRoom(message.channelId)).emit("message:new", message);
+  };
+
+  realtime.emitMessageUpdated = (message) => {
+    io.to(channelRoom(message.channelId)).emit("message:updated", message);
   };
 
   realtime.emitProfileUpdated = (profile) => {

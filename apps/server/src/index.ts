@@ -12,6 +12,7 @@ const repo = new PrismaChatRepository(prisma);
 const storage = createAssetStorage(env);
 const realtime: RealtimePublisher = {
   emitMessage: () => undefined,
+  emitMessageUpdated: () => undefined,
   emitProfileUpdated: () => undefined,
   emitMembersUpdated: () => undefined,
   emitChannelsUpdated: () => undefined,

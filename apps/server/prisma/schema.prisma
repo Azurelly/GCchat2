@@ -15,19 +15,20 @@ enum UserRole {
 }
 
 model User {
-  id             String               @id @default(cuid())
-  username       String               @unique
-  passwordHash   String
-  role           UserRole             @default(USER)
-  bannedAt       DateTime?
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
-  profile        Profile?
-  memberships    Membership[]
-  messages       Message[]
-  createdEvents  CalendarEvent[]      @relation("CalendarEventCreator")
-  calendarOptIns CalendarEventOptIn[]
-  createdEmojis  CustomEmoji[]        @relation("CustomEmojiCreator")
+  id               String               @id @default(cuid())
+  username         String               @unique
+  passwordHash     String
+  role             UserRole             @default(USER)
+  bannedAt         DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  profile          Profile?
+  memberships      Membership[]
+  messages         Message[]
+  messageReactions MessageReaction[]
+  createdEvents    CalendarEvent[]      @relation("CalendarEventCreator")
+  calendarOptIns   CalendarEventOptIn[]
+  createdEmojis    CustomEmoji[]        @relation("CustomEmojiCreator")
 }
 
 model Profile {
@@ -76,17 +77,22 @@ model Membership {
 }
 
 model Message {
-  id          String       @id @default(cuid())
+  id          String            @id @default(cuid())
   channelId   String
   authorId    String
+  replyToId   String?
   content     String
-  createdAt   DateTime     @default(now())
+  createdAt   DateTime          @default(now())
   editedAt    DateTime?
-  channel     Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  author      User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  channel     Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author      User              @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  replyTo     Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies     Message[]         @relation("MessageReplies")
   attachments Attachment[]
+  reactions   MessageReaction[]
 
   @@index([channelId, createdAt])
+  @@index([replyToId])
 }
 
 model Attachment {
@@ -98,6 +104,20 @@ model Attachment {
   size      Int
   createdAt DateTime @default(now())
   message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@index([userId])
 }
 
 model CalendarEvent {
