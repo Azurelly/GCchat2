@@ -235,6 +235,8 @@ textarea:focus {
 
 .server-header,
 .chat-header {
+  grid-row: 1;
+  justify-content: space-between;
   height: 48px;
   display: flex;
   align-items: center;
@@ -344,9 +346,45 @@ textarea:focus {
   background: #313338;
 }
 
-.chat-header {
-  grid-row: 1;
+.chat-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   color: #f2f3f5;
+}
+
+.chat-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-button {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 4px;
+  padding: 0 10px;
+  color: #dbdee1;
+  background: #3f4147;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.update-button.ready {
+  color: #fff;
+  background: #23a559;
+}
+
+.update-button.ready:hover {
+  background: #1f8f4d;
+}
+
+.update-button:disabled {
+  cursor: default;
+  opacity: 0.9;
 }
 
 .error-banner {

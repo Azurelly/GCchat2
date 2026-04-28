@@ -50,8 +50,10 @@ Keep all generated release assets attached to the GitHub Release.
 ## How Updates Work
 
 Installed production builds check GitHub Releases through `update.electronjs.org`.
-When a newer published release exists, the app downloads it in the background and asks
-the user to restart.
+When a newer published release exists, the app downloads it in the background. After
+download, the chat header shows an `Update Ready` button. Clicking it calls
+Electron's updater restart/install flow, closes the app, installs the update, and
+reopens the app on the new version.
 
 Draft and prerelease GitHub Releases are not used for normal auto-updates.
 

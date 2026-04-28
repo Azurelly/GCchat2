@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
+  Download,
   Hash,
   ImagePlus,
   Loader2,
@@ -10,7 +11,6 @@ import {
   Settings,
   Sparkles,
   Upload,
-  UserRound,
   X
 } from "lucide-react";
 import { io, type Socket } from "socket.io-client";
@@ -43,6 +43,10 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState<UserProfile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({
+    phase: "idle",
+    canRestart: false
+  });
   const socketRef = useRef<ChatSocket | null>(null);
 
   useEffect(() => {
@@ -62,6 +66,13 @@ export function App() {
         api.setToken(null);
       })
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    void window.gcchat.updates.getStatus().then(setUpdateStatus);
+    const unsubscribe = window.gcchat.updates.onStatus(setUpdateStatus);
+
+    return unsubscribe;
   }, []);
 
   useEffect(() => {
@@ -200,8 +211,11 @@ export function App() {
 
       <main className="chat-panel">
         <header className="chat-header">
-          <Hash size={22} />
-          <span>{session.channel.name}</span>
+          <div className="chat-title">
+            <Hash size={22} />
+            <span>{session.channel.name}</span>
+          </div>
+          <UpdateButton status={updateStatus} />
         </header>
 
         {error ? (
@@ -244,6 +258,28 @@ export function App() {
       ) : null}
     </div>
   );
+}
+
+function UpdateButton({ status }: { status: UpdateStatus }) {
+  if (status.phase === "downloaded") {
+    return (
+      <button className="update-button ready" onClick={() => window.gcchat.updates.restartAndInstall()}>
+        <Download size={16} />
+        Update Ready
+      </button>
+    );
+  }
+
+  if (status.phase === "downloading") {
+    return (
+      <button className="update-button" disabled>
+        <Loader2 className="spin" size={15} />
+        Updating
+      </button>
+    );
+  }
+
+  return null;
 }
 
 function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
