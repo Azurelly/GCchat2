@@ -209,7 +209,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${activeFeature === "chat" ? "chat-shell" : "calendar-shell"}`}>
       <aside className="server-rail">
         <button
           className={`server-pill ${activeFeature === "chat" ? "active" : ""}`}
@@ -229,48 +229,38 @@ export function App() {
         </button>
       </aside>
 
-      <aside className="channel-sidebar">
-        <div className="server-header">
-          <span>{session.server.name}</span>
-          <Sparkles size={16} />
-        </div>
-
-        <div className="channel-group">
-          <div className="channel-group-title">
-            {activeFeature === "chat" ? "Text Channels" : "Hub Features"}
+      {activeFeature === "chat" ? (
+        <aside className="channel-sidebar">
+          <div className="server-header">
+            <span>{session.server.name}</span>
+            <Sparkles size={16} />
           </div>
-          <button
-            className={`channel-link ${activeFeature === "chat" ? "active" : ""}`}
-            onClick={() => setActiveFeature("chat")}
-          >
-            <Hash size={18} />
-            {session.channel.name}
-          </button>
-          <button
-            className={`channel-link ${activeFeature === "calendar" ? "active" : ""}`}
-            onClick={() => setActiveFeature("calendar")}
-          >
-            <CalendarDays size={18} />
-            GC calendar
-          </button>
-        </div>
 
-        <div className="user-panel">
-          <button className="user-identity" onClick={() => setSelectedProfile(session.user)}>
-            <Avatar profile={session.user} size="sm" />
-            <span>
-              <strong>{session.user.displayName}</strong>
-              <small>@{session.user.username}</small>
-            </span>
-          </button>
-          <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Settings">
-            <Settings size={18} />
-          </button>
-          <button className="icon-button" onClick={handleLogout} aria-label="Log out">
-            <LogOut size={18} />
-          </button>
-        </div>
-      </aside>
+          <div className="channel-group">
+            <div className="channel-group-title">Text Channels</div>
+            <button className="channel-link active">
+              <Hash size={18} />
+              {session.channel.name}
+            </button>
+          </div>
+
+          <div className="user-panel">
+            <button className="user-identity" onClick={() => setSelectedProfile(session.user)}>
+              <Avatar profile={session.user} size="sm" />
+              <span>
+                <strong>{session.user.displayName}</strong>
+                <small>@{session.user.username}</small>
+              </span>
+            </button>
+            <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+              <Settings size={18} />
+            </button>
+            <button className="icon-button" onClick={handleLogout} aria-label="Log out">
+              <LogOut size={18} />
+            </button>
+          </div>
+        </aside>
+      ) : null}
 
       {activeFeature === "chat" ? (
         <main className="chat-panel">

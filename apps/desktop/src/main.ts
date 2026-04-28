@@ -142,7 +142,8 @@ function setupAutoUpdates() {
     setUpdateStatus({ phase: "error", message: error.message, canRestart: false });
   });
 
-  setTimeout(checkForUpdates, 3000);
+  checkForUpdates();
+  setTimeout(checkForUpdates, 15000);
   setInterval(checkForUpdates, 10 * 60 * 1000);
 }
 
