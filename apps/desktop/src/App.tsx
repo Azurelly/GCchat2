@@ -22,6 +22,7 @@ import {
   Download,
   Edit3,
   ExternalLink,
+  FileAudio,
   FileUp,
   Hash,
   ImageUp,
@@ -41,6 +42,8 @@ import {
   Palette,
   Paperclip,
   Pencil,
+  Pause,
+  Play,
   RefreshCw,
   Reply,
   RotateCcw,
@@ -88,7 +91,8 @@ import type {
   VoiceModerationRequest,
   VoiceParticipantState,
   VoiceSelfStateRequest,
-  VoiceStateView
+  VoiceStateView,
+  YouTubeEmbedView
 } from "@gcchat/shared";
 import { API_URL, ApiClient } from "./api";
 
@@ -98,6 +102,8 @@ const appearanceStorageKey = "gcchat.appearance-preferences";
 const voiceVolumeStorageKey = "gcchat.voice-volumes";
 const localVoiceMuteStorageKey = "gcchat.local-voice-mutes";
 const eventTokenPattern = /\[\[gc-event:([^\]]+)]]/g;
+const youtubeUrlPattern =
+  /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?[^\s<)]*v=|shorts\/|live\/|embed\/)|youtu\.be\/)[^\s<)]*/gi;
 
 const defaultEmojis = [
   { name: "grinning", emoji: "😀" },
@@ -3608,6 +3614,9 @@ function MessageList({
                 <MessageEventPlaceholder key={eventId} status={calendarEventsStatus} />
               );
             })}
+            {extractYouTubeUrls(stripEventTokens(message.content)).map((url) => (
+              <YouTubeEmbed key={url} url={url} />
+            ))}
             {message.attachments.length > 0 ? (
               <div className="attachments">
                 {message.attachments.map((attachment) =>
@@ -3621,6 +3630,8 @@ function MessageList({
                     >
                       <img src={attachment.url} alt={attachment.fileName} />
                     </button>
+                  ) : isAudioAttachment(attachment) ? (
+                    <AudioAttachment attachment={attachment} key={attachment.id} />
                   ) : (
                     <a
                       className="attachment"
@@ -3695,6 +3706,201 @@ function MessageList({
         />
       ) : null}
     </section>
+  );
+}
+
+function AudioAttachment({ attachment }: { attachment: MessageView["attachments"][number] }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+
+  const togglePlayback = async () => {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    if (audio.paused) {
+      await audio.play().catch(() => undefined);
+      setPlaying(!audio.paused);
+      return;
+    }
+
+    audio.pause();
+    setPlaying(false);
+  };
+
+  const seek = (value: number) => {
+    const audio = audioRef.current;
+    const nextTime = Number.isFinite(value) ? value : 0;
+
+    setCurrentTime(nextTime);
+
+    if (audio) {
+      audio.currentTime = nextTime;
+    }
+  };
+
+  const changeVolume = (value: number) => {
+    const nextVolume = Math.min(Math.max(value, 0), 1);
+
+    setVolume(nextVolume);
+
+    if (audioRef.current) {
+      audioRef.current.volume = nextVolume;
+    }
+  };
+
+  return (
+    <div className="attachment audio-attachment">
+      <audio
+        ref={audioRef}
+        src={attachment.url}
+        preload="metadata"
+        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
+        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+        onEnded={() => setPlaying(false)}
+      />
+      <button
+        className="audio-download-button"
+        type="button"
+        onClick={() => void downloadAttachment(attachment)}
+        title="Download"
+        aria-label={`Download ${attachment.fileName}`}
+      >
+        <Download size={18} />
+      </button>
+      <div className="audio-meta">
+        <span className="audio-file-icon">
+          <FileAudio size={20} />
+        </span>
+        <div>
+          <strong>{attachment.fileName}</strong>
+          <span>{formatFileSize(attachment.size)}</span>
+        </div>
+      </div>
+      <div className="audio-controls">
+        <button type="button" onClick={() => void togglePlayback()} aria-label={playing ? "Pause" : "Play"}>
+          {playing ? <Pause size={22} /> : <Play size={24} />}
+        </button>
+        <span className="audio-time">
+          {formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}
+        </span>
+        <input
+          className="audio-progress"
+          type="range"
+          min="0"
+          max={Math.max(duration, 0.01)}
+          step="0.01"
+          value={Math.min(currentTime, Math.max(duration, 0.01))}
+          onChange={(event) => seek(Number(event.currentTarget.value))}
+          aria-label="Audio progress"
+        />
+        <Volume2 size={20} />
+        <input
+          className="audio-volume"
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={volume}
+          onChange={(event) => changeVolume(Number(event.currentTarget.value))}
+          aria-label="Audio volume"
+        />
+      </div>
+    </div>
+  );
+}
+
+function YouTubeEmbed({ url }: { url: string }) {
+  const [embed, setEmbed] = useState<YouTubeEmbedView | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+
+    setStatus("loading");
+    setPlaying(false);
+
+    api
+      .getYouTubeEmbed(url)
+      .then((nextEmbed) => {
+        if (!active) {
+          return;
+        }
+
+        setEmbed(nextEmbed);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (active) {
+          setStatus("error");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [url]);
+
+  if (status === "error") {
+    return (
+      <a className="youtube-embed youtube-embed-fallback" href={url} target="_blank" rel="noreferrer">
+        <span>YouTube</span>
+        <strong>{url}</strong>
+      </a>
+    );
+  }
+
+  if (!embed || status === "loading") {
+    return (
+      <div className="youtube-embed youtube-embed-loading">
+        <Loader2 className="spin" size={16} />
+        <span>Loading YouTube preview...</span>
+      </div>
+    );
+  }
+
+  const iframeUrl = `${embed.embedUrl}?autoplay=1&rel=0`;
+
+  return (
+    <div className="youtube-embed">
+      <div className="youtube-provider">{embed.providerName}</div>
+      {embed.authorName ? <div className="youtube-author">{embed.authorName}</div> : null}
+      <a className="youtube-title" href={embed.url} target="_blank" rel="noreferrer">
+        {embed.title}
+      </a>
+      <div className="youtube-media">
+        {playing ? (
+          <iframe
+            src={iframeUrl}
+            title={embed.title}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+          />
+        ) : (
+          <button type="button" onClick={() => setPlaying(true)} aria-label={`Play ${embed.title}`}>
+            <img src={embed.thumbnailUrl} alt="" />
+            <span className="youtube-play-overlay">
+              <Play size={30} fill="currentColor" />
+            </span>
+          </button>
+        )}
+      </div>
+      <button
+        className="youtube-open-button"
+        type="button"
+        onClick={() => window.open(embed.url, "_blank", "noopener,noreferrer")}
+        title="Open in Browser"
+        aria-label="Open YouTube video in browser"
+      >
+        <ExternalLink size={16} />
+      </button>
+    </div>
   );
 }
 
@@ -6080,6 +6286,59 @@ function extractEventIds(content: string) {
 
 function stripEventTokens(content: string) {
   return content.replace(eventTokenPattern, "").trim();
+}
+
+function extractYouTubeUrls(content: string) {
+  youtubeUrlPattern.lastIndex = 0;
+
+  return Array.from(
+    new Set(
+      [...content.matchAll(youtubeUrlPattern)].map((match) => match[0].replace(/[.,!?;:]+$/, ""))
+    )
+  );
+}
+
+function isAudioAttachment(attachment: MessageView["attachments"][number]) {
+  return attachment.mimeType.startsWith("audio/");
+}
+
+async function downloadAttachment(attachment: MessageView["attachments"][number]) {
+  try {
+    const response = await fetch(attachment.url);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = attachment.fileName || "download";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 500);
+  } catch {
+    window.open(attachment.url, "_blank", "noopener,noreferrer");
+  }
+}
+
+function formatPlaybackTime(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "0:00";
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function formatFileSize(size: number) {
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 KB";
+  }
+
+  if (size < 1024 * 1024) {
+    return `${Math.max(1, Math.round(size / 1024))} KB`;
+  }
+
+  return `${(size / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function buildCalendarDays(visibleMonth: Date, events: CalendarEventView[]) {

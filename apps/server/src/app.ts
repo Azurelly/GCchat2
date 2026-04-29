@@ -12,7 +12,8 @@ import type {
   UpdateProfileRequest,
   UploadKind,
   UserProfile,
-  VoiceTokenResponse
+  VoiceTokenResponse,
+  YouTubeEmbedView
 } from "@gcchat/shared";
 import {
   hashPassword,
@@ -311,6 +312,15 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
       }
 
       res.json(page.messages);
+    })
+  );
+
+  app.get(
+    "/embeds/youtube",
+    asyncRoute(async (req, res) => {
+      const inputUrl = typeof req.query.url === "string" ? req.query.url : "";
+      const embed = await fetchYouTubeEmbed(inputUrl);
+      res.json(embed);
     })
   );
 
@@ -631,6 +641,88 @@ function parseMessageLimit(limit: unknown) {
 
 function parseMessageCursor(before: unknown) {
   return typeof before === "string" && before.trim().length > 0 ? before.trim() : null;
+}
+
+async function fetchYouTubeEmbed(inputUrl: string): Promise<YouTubeEmbedView> {
+  const videoId = extractYouTubeVideoId(inputUrl);
+
+  if (!videoId) {
+    throw new HttpError(400, "Invalid YouTube URL");
+  }
+
+  const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const fallback: YouTubeEmbedView = {
+    url,
+    videoId,
+    title: "YouTube video",
+    authorName: null,
+    thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    embedUrl: `https://www.youtube.com/embed/${videoId}`,
+    providerName: "YouTube"
+  };
+
+  const oembedUrl = new URL("https://www.youtube.com/oembed");
+  oembedUrl.searchParams.set("url", url);
+  oembedUrl.searchParams.set("format", "json");
+
+  try {
+    const response = await fetch(oembedUrl, {
+      headers: { accept: "application/json" }
+    });
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    const data = (await response.json()) as {
+      title?: unknown;
+      author_name?: unknown;
+      thumbnail_url?: unknown;
+    };
+
+    return {
+      ...fallback,
+      title: typeof data.title === "string" && data.title.trim() ? data.title.trim() : fallback.title,
+      authorName:
+        typeof data.author_name === "string" && data.author_name.trim()
+          ? data.author_name.trim()
+          : fallback.authorName,
+      thumbnailUrl:
+        typeof data.thumbnail_url === "string" && data.thumbnail_url.trim()
+          ? data.thumbnail_url.trim()
+          : fallback.thumbnailUrl
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function extractYouTubeVideoId(input: string) {
+  try {
+    const url = new URL(input.trim());
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host === "youtu.be") {
+      return sanitizeYouTubeVideoId(url.pathname.slice(1).split("/")[0]);
+    }
+
+    if (!host.endsWith("youtube.com")) {
+      return null;
+    }
+
+    if (url.pathname === "/watch") {
+      return sanitizeYouTubeVideoId(url.searchParams.get("v"));
+    }
+
+    const match = url.pathname.match(/^\/(?:embed|shorts|live)\/([^/?#]+)/);
+    return sanitizeYouTubeVideoId(match?.[1] ?? null);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeYouTubeVideoId(videoId: string | null | undefined) {
+  return videoId && /^[a-zA-Z0-9_-]{6,20}$/.test(videoId) ? videoId : null;
 }
 
 function requiredParam(req: Request, name: string) {

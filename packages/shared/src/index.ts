@@ -89,6 +89,16 @@ export interface MessagePageView {
   nextBefore: string | null;
 }
 
+export interface YouTubeEmbedView {
+  url: string;
+  videoId: string;
+  title: string;
+  authorName: string | null;
+  thumbnailUrl: string;
+  embedUrl: string;
+  providerName: "YouTube";
+}
+
 export interface CalendarEventOptInView {
   user: UserProfile;
   createdAt: string;

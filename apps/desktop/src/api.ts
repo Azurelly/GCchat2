@@ -24,7 +24,8 @@ import type {
   UploadKind,
   UploadResponse,
   UserProfile,
-  VoiceTokenResponse
+  VoiceTokenResponse,
+  YouTubeEmbedView
 } from "@gcchat/shared";
 
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4197";
@@ -161,6 +162,11 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({})
     });
+  }
+
+  public getYouTubeEmbed(url: string) {
+    const params = new URLSearchParams({ url });
+    return this.request<YouTubeEmbedView>(`/embeds/youtube?${params.toString()}`);
   }
 
   public getCalendarEvents() {
