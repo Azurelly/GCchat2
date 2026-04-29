@@ -618,6 +618,10 @@ export function App() {
 
           const status = getParticipantVideoStatus(participant, source);
 
+          if (!status || (kind === "camera" && !isVideoStatusActive(status))) {
+            continue;
+          }
+
           nextShares.push({
             id: getVideoStreamId(participant.identity, kind),
             userId: participant.identity,
@@ -626,7 +630,7 @@ export function App() {
             isLocal,
             profile,
             track: publication.track ?? null,
-            status: status ?? "starting"
+            status
           });
         }
       };
@@ -642,7 +646,9 @@ export function App() {
         nextShares.some((share) => share.userId === session.user.id && share.kind === "screen" && share.status !== "ended");
       const localCameraOn =
         cameraStartingRef.current ||
-        nextShares.some((share) => share.userId === session.user.id && share.kind === "camera" && share.status !== "ended");
+        nextShares.some(
+          (share) => share.userId === session.user.id && share.kind === "camera" && isVideoStatusActive(share.status)
+        );
 
       voiceSharingRef.current = localSharing;
       voiceCameraOnRef.current = localCameraOn;
@@ -695,7 +701,7 @@ export function App() {
             : currentSession.members.find((member) => member.id === participantState.userId) ?? null;
         const liveMuted = liveParticipant ? isParticipantAudioMuted(liveParticipant) : participantState.selfMuted;
         const liveScreenSharing = liveParticipant ? isParticipantScreenSharing(liveParticipant) : false;
-        const liveCameraOn = liveParticipant ? isParticipantCameraOn(liveParticipant) : false;
+        const liveCameraOn = liveParticipant ? isParticipantCameraOn(liveParticipant) : participantState.cameraOn;
         const locallyMuted = locallyMutedVoiceUsersRef.current.includes(participantState.userId);
 
         return {
@@ -712,7 +718,7 @@ export function App() {
           isServerDeafened: participantState.serverDeafened,
           isSpeaking: liveParticipant?.isSpeaking ?? false,
           isScreenSharing: participantState.screenSharing || liveScreenSharing,
-          isCameraOn: participantState.cameraOn || liveCameraOn,
+          isCameraOn: liveParticipant ? liveCameraOn : participantState.cameraOn,
           viewingStreamId: participantState.viewingStreamId ?? null,
           reconnecting: participantState.reconnecting,
           profile,
@@ -964,7 +970,11 @@ export function App() {
           source: publication.source,
           kind: publication.kind
         });
-        sync();
+        if (publication.kind === Track.Kind.Video && participant.identity === room?.localParticipant.identity) {
+          syncLocalVideoPresence();
+        } else {
+          sync();
+        }
       });
       room.on(RoomEvent.TrackUnmuted, (publication, participant) => {
         appendVoiceDiagnostic("livekit:track-unmuted", {
@@ -972,7 +982,11 @@ export function App() {
           source: publication.source,
           kind: publication.kind
         });
-        sync();
+        if (publication.kind === Track.Kind.Video && participant.identity === room?.localParticipant.identity) {
+          syncLocalVideoPresence();
+        } else {
+          sync();
+        }
       });
       room.on(RoomEvent.TrackPublished, (publication, participant) => {
         appendVoiceDiagnostic("livekit:track-published", {
@@ -980,7 +994,11 @@ export function App() {
           source: publication.source,
           kind: publication.kind
         });
-        sync();
+        if (publication.kind === Track.Kind.Video && participant.identity === room?.localParticipant.identity) {
+          syncLocalVideoPresence();
+        } else {
+          sync();
+        }
       });
       room.on(RoomEvent.TrackUnpublished, (publication, participant) => {
         appendVoiceDiagnostic("livekit:track-unpublished", {
@@ -988,7 +1006,11 @@ export function App() {
           source: publication.source,
           kind: publication.kind
         });
-        sync();
+        if (publication.kind === Track.Kind.Video && participant.identity === room?.localParticipant.identity) {
+          syncLocalVideoPresence();
+        } else {
+          sync();
+        }
       });
       room.on(RoomEvent.LocalTrackPublished, syncLocalVideoPresence);
       room.on(RoomEvent.LocalTrackUnpublished, syncLocalVideoPresence);
@@ -6914,12 +6936,16 @@ function getParticipantScreenShareStatus(participant: Participant): ScreenShareV
   return getParticipantVideoStatus(participant, Track.Source.ScreenShare);
 }
 
+function isVideoStatusActive(status: ScreenShareView["status"] | null) {
+  return status === "live" || status === "starting";
+}
+
 function isParticipantScreenSharing(participant: Participant) {
   return getParticipantScreenShareStatus(participant) !== null;
 }
 
 function isParticipantCameraOn(participant: Participant) {
-  return getParticipantVideoStatus(participant, Track.Source.Camera) !== null;
+  return isVideoStatusActive(getParticipantVideoStatus(participant, Track.Source.Camera));
 }
 
 function describeVoiceRoom(room: Room | null) {
