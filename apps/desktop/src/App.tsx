@@ -18,8 +18,10 @@ import {
   ChevronRight,
   ClipboardList,
   Clock,
+  Copy,
   Download,
   Edit3,
+  ExternalLink,
   FileUp,
   Hash,
   ImageUp,
@@ -3433,6 +3435,7 @@ function MessageList({
     y: number;
     mode: "actions" | "reactions";
   } | null>(null);
+  const [expandedImage, setExpandedImage] = useState<MessageView["attachments"][number] | null>(null);
 
   useEffect(() => {
     const previous = previousMessageEdgeRef.current;
@@ -3607,21 +3610,29 @@ function MessageList({
             })}
             {message.attachments.length > 0 ? (
               <div className="attachments">
-                {message.attachments.map((attachment) => (
-                  <a
-                    className="attachment"
-                    href={attachment.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    key={attachment.id}
-                  >
-                    {attachment.mimeType.startsWith("image/") ? (
+                {message.attachments.map((attachment) =>
+                  attachment.mimeType.startsWith("image/") ? (
+                    <button
+                      className="attachment image-attachment"
+                      key={attachment.id}
+                      type="button"
+                      onClick={() => setExpandedImage(attachment)}
+                      aria-label={`Open ${attachment.fileName}`}
+                    >
                       <img src={attachment.url} alt={attachment.fileName} />
-                    ) : (
+                    </button>
+                  ) : (
+                    <a
+                      className="attachment"
+                      href={attachment.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      key={attachment.id}
+                    >
                       <span>{attachment.fileName}</span>
-                    )}
-                  </a>
-                ))}
+                    </a>
+                  )
+                )}
               </div>
             ) : null}
             {message.reactions.length > 0 ? (
@@ -3676,7 +3687,107 @@ function MessageList({
           }
         />
       ) : null}
+      {expandedImage ? (
+        <ImageLightbox
+          attachment={expandedImage}
+          onClose={() => setExpandedImage(null)}
+          onError={(message) => onError(message)}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function ImageLightbox({
+  attachment,
+  onClose,
+  onError
+}: {
+  attachment: MessageView["attachments"][number];
+  onClose: () => void;
+  onError: (message: string) => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(attachment.url);
+    } catch {
+      onError("Could not copy image link");
+    }
+  };
+
+  const downloadImage = async () => {
+    try {
+      const response = await fetch(attachment.url);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = attachment.fileName || "image";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 500);
+    } catch {
+      window.open(attachment.url, "_blank", "noopener,noreferrer");
+    }
+  };
+
+  return (
+    <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={attachment.fileName}>
+      <button className="image-lightbox-backdrop" type="button" onClick={onClose} aria-label="Close image preview" />
+      <div className="image-lightbox-toolbar">
+        <button
+          className="image-tool-button"
+          type="button"
+          onClick={() => void copyLink()}
+          title="Copy Image Link"
+          data-tooltip="Copy Image Link"
+        >
+          <Copy size={20} />
+        </button>
+        <button
+          className="image-tool-button"
+          type="button"
+          onClick={() => void downloadImage()}
+          title="Save Image"
+          data-tooltip="Save Image"
+        >
+          <Download size={20} />
+        </button>
+        <button
+          className="image-tool-button"
+          type="button"
+          onClick={() => window.open(attachment.url, "_blank", "noopener,noreferrer")}
+          title="Open in Browser"
+          data-tooltip="Open in Browser"
+        >
+          <ExternalLink size={20} />
+        </button>
+        <button
+          className="image-tool-button close"
+          type="button"
+          onClick={onClose}
+          title="Close"
+          data-tooltip="Close"
+        >
+          <X size={22} />
+        </button>
+      </div>
+      <div className="image-lightbox-content">
+        <img src={attachment.url} alt={attachment.fileName} />
+      </div>
+    </div>
   );
 }
 
@@ -5145,7 +5256,8 @@ function SettingsPage({
       let nextAvatarUrl = avatarUrl;
 
       if (avatarFile) {
-        const uploaded = await api.upload(avatarFile, "avatar");
+        const normalizedAvatar = await normalizeAvatarFile(avatarFile);
+        const uploaded = await api.upload(normalizedAvatar, "avatar");
         nextAvatarUrl = uploaded.url;
       }
 
@@ -5620,6 +5732,48 @@ function Avatar({
       {status ? <i className={`presence-dot ${status}`} /> : null}
     </span>
   );
+}
+
+async function normalizeAvatarFile(file: File) {
+  if (!file.type.startsWith("image/") || file.type === "image/gif") {
+    return file;
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    const size = 512;
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      bitmap.close();
+      return file;
+    }
+
+    const sourceSize = Math.min(bitmap.width, bitmap.height);
+    const sourceX = Math.max(0, (bitmap.width - sourceSize) / 2);
+    const sourceY = Math.max(0, (bitmap.height - sourceSize) / 2);
+
+    canvas.width = size;
+    canvas.height = size;
+    context.clearRect(0, 0, size, size);
+    context.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+    bitmap.close();
+
+    const outputType = file.type === "image/png" ? "image/png" : "image/jpeg";
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, outputType, 0.92));
+
+    if (!blob) {
+      return file;
+    }
+
+    const extension = outputType === "image/png" ? "png" : "jpg";
+    const name = file.name.replace(/\.[^.]+$/, "") || "avatar";
+
+    return new File([blob], `${name}.${extension}`, { type: outputType });
+  } catch {
+    return file;
+  }
 }
 
 function applyProfileUpdate(session: Session, profile: UserProfile): Session {

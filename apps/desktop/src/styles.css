@@ -380,8 +380,19 @@ select:focus {
 
 .channel-group {
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 18px 8px;
+  scrollbar-width: none;
+}
+
+.channel-group::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.channel-sidebar * {
+  min-width: 0;
 }
 
 .channel-group-title,
@@ -541,11 +552,13 @@ select:focus {
 .voice-connection-card {
   display: grid;
   gap: 8px;
-  border-radius: 6px;
-  margin: 4px 4px 0;
-  padding: 10px;
+  max-width: calc(100% - 8px);
+  border-radius: 8px;
+  margin: 5px 4px 0;
+  padding: 9px 8px;
   color: #b5bac1;
-  background: #232428;
+  background: #1e1f22;
+  box-shadow: inset 3px 0 0 rgba(35, 165, 89, 0.45);
 }
 
 .voice-status-row,
@@ -564,13 +577,17 @@ select:focus {
 
 .mini-join-button {
   margin-left: auto;
-  border-radius: 4px;
-  padding: 4px 8px;
+  border-radius: 6px;
+  padding: 5px 10px;
   color: #fff;
   background: #23a559;
   cursor: pointer;
   font-size: 11px;
   font-weight: 900;
+}
+
+.mini-join-button:hover {
+  background: #2bbd67;
 }
 
 .voice-participant-row {
@@ -579,15 +596,15 @@ select:focus {
 
 .voice-participant-list {
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .voice-participant {
   min-width: 0;
-  height: 28px;
-  gap: 7px;
-  border-radius: 4px;
-  padding: 0 6px;
+  height: 30px;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 0 7px;
   color: #b5bac1;
   background: transparent;
   cursor: pointer;
@@ -610,6 +627,7 @@ select:focus {
 }
 
 .voice-participant span:not(.avatar):not(.voice-fallback-avatar) {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -649,15 +667,16 @@ select:focus {
 }
 
 .voice-controls {
-  gap: 6px;
+  gap: 7px;
+  padding-top: 2px;
 }
 
 .voice-control-button {
-  width: 34px;
-  height: 30px;
+  width: 36px;
+  height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 4px;
+  border-radius: 7px;
   color: #dbdee1;
   background: #35373c;
   cursor: pointer;
@@ -704,6 +723,7 @@ select:focus {
 .voice-status-bar {
   display: grid;
   gap: 8px;
+  max-width: calc(100% - 16px);
   margin: 8px;
   border-radius: 8px;
   padding: 10px;
@@ -1269,6 +1289,7 @@ select:focus {
   position: relative;
   display: grid;
   place-items: center;
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   background: linear-gradient(135deg, #5865f2, #23a559);
   color: white;
@@ -1277,10 +1298,13 @@ select:focus {
 }
 
 .avatar img {
+  display: block;
   width: 100%;
   height: 100%;
   border-radius: inherit;
+  clip-path: circle(50% at 50% 50%);
   object-fit: cover;
+  object-position: center;
 }
 
 .avatar-muted {
@@ -1533,6 +1557,16 @@ select:focus {
   background: #2b2d31;
 }
 
+.image-attachment {
+  display: block;
+  padding: 0;
+  cursor: zoom-in;
+}
+
+.image-attachment:hover {
+  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.55);
+}
+
 .attachment img {
   display: block;
   max-width: 100%;
@@ -1543,6 +1577,103 @@ select:focus {
 .attachment span {
   display: block;
   padding: 12px;
+}
+
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 76px 28px 32px;
+}
+
+.image-lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.84);
+  cursor: zoom-out;
+}
+
+.image-lightbox-toolbar {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 12px;
+  padding: 8px;
+  background: rgba(30, 31, 34, 0.96);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+}
+
+.image-tool-button {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #dbdee1;
+  background: #2b2d31;
+  cursor: pointer;
+}
+
+.image-tool-button:hover {
+  color: #fff;
+  background: #3f4147;
+}
+
+.image-tool-button.close {
+  background: #35373c;
+}
+
+.image-tool-button::after {
+  pointer-events: none;
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  z-index: 3;
+  width: max-content;
+  max-width: 180px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #f2f3f5;
+  background: #111214;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  font-weight: 800;
+  opacity: 0;
+  transform: translate(-50%, -4px);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.image-tool-button:hover::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.image-lightbox-content {
+  position: relative;
+  z-index: 1;
+  max-width: min(96vw, 1400px);
+  max-height: calc(100vh - 128px);
+  display: grid;
+  place-items: center;
+}
+
+.image-lightbox-content img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 128px);
+  border-radius: 6px;
+  object-fit: contain;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
 }
 
 .voice-preview-stage {
@@ -1688,9 +1819,9 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-radius: 14px;
-  padding: 10px;
-  background: rgba(30, 31, 34, 0.94);
+  border-radius: 16px;
+  padding: 8px;
+  background: rgba(30, 31, 34, 0.98);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
 }
 
@@ -1703,7 +1834,7 @@ select:focus {
   place-items: center;
   justify-content: center;
   gap: 7px;
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0 12px;
   color: #dbdee1;
   background: #2b2d31;
@@ -1744,9 +1875,9 @@ select:focus {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: 58px minmax(0, 1fr) auto;
+  grid-template-rows: 54px minmax(0, 1fr) auto;
   overflow: hidden;
-  background: #111214;
+  background: #050506;
 }
 
 .stream-stage-header {
@@ -1810,13 +1941,15 @@ select:focus {
   min-height: 0;
   display: grid;
   place-items: center;
-  padding: 18px;
+  padding: 18px 22px 10px;
+  overflow: hidden;
 }
 
 .stream-stage-body video {
   max-width: 100%;
-  max-height: 100%;
+  max-height: calc(100% - 4px);
   border-radius: 8px;
+  object-fit: contain;
   box-shadow: 0 22px 80px rgba(0, 0, 0, 0.5);
 }
 
@@ -1839,19 +1972,18 @@ select:focus {
 }
 
 .stream-stage-footer {
-  min-height: 86px;
   display: grid;
   justify-items: center;
   gap: 10px;
   padding: 10px 18px 14px;
-  background: rgba(30, 31, 34, 0.95);
-  border-top: 1px solid rgba(0, 0, 0, 0.55);
+  background: linear-gradient(180deg, rgba(5, 5, 6, 0.2), rgba(5, 5, 6, 0.98));
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
 .discord-stream-footer {
-  min-height: 188px;
+  min-height: 156px;
   grid-template-rows: auto auto auto;
-  padding: 12px 18px 16px;
+  padding: 8px 18px 14px;
 }
 
 .stream-stage-footer > span {
@@ -1901,16 +2033,20 @@ select:focus {
 .stream-call-strip {
   max-width: 100%;
   display: flex;
-  gap: 10px;
+  gap: 12px;
   overflow-x: auto;
+  padding: 2px 2px 4px;
 }
 
 .stream-call-tile {
-  width: 180px;
+  width: 172px;
   display: grid;
-  gap: 6px;
+  gap: 0;
+  border-radius: 10px;
   color: #dbdee1;
+  background: #1e1f22;
   cursor: pointer;
+  overflow: hidden;
   text-align: left;
 }
 
@@ -1920,13 +2056,18 @@ select:focus {
   display: grid;
   place-items: center;
   border: 2px solid transparent;
-  border-radius: 8px;
+  border-radius: 10px 10px 0 0;
   overflow: hidden;
-  background: #2b2d31;
+  background: #111214;
 }
 
 .stream-call-tile.active > div {
-  border-color: #5865f2;
+  border-color: #23a559;
+  box-shadow: inset 0 0 0 1px rgba(35, 165, 89, 0.55);
+}
+
+.stream-call-tile:hover {
+  background: #2b2d31;
 }
 
 .stream-call-tile video {
@@ -1951,6 +2092,7 @@ select:focus {
 .stream-call-tile > span {
   overflow: hidden;
   color: #f2f3f5;
+  padding: 7px 10px 9px;
   font-size: 12px;
   font-weight: 900;
   text-overflow: ellipsis;
