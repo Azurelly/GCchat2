@@ -2043,7 +2043,11 @@ export function App() {
       {activeFeature === "chat" ? (
         <MembersPanel members={session.members} onProfile={setSelectedProfile} />
       ) : activeFeature === "calendar" ? (
-        <CalendarSidePanel events={calendarEvents} onProfile={setSelectedProfile} />
+        <CalendarSidePanel
+          events={calendarEvents}
+          onProfile={setSelectedProfile}
+          onOpenEvent={handleOpenCalendarEvent}
+        />
       ) : null}
 
       {settingsOpen ? (
@@ -3608,6 +3612,7 @@ function MessageList({
                   key={eventId}
                   onUpdated={onEventUpdated}
                   onOpenCalendarEvent={onOpenCalendarEvent}
+                  onProfile={onProfile}
                   onError={onError}
                 />
               ) : (
@@ -4111,11 +4116,13 @@ function MessageEventEmbed({
   event,
   onUpdated,
   onOpenCalendarEvent,
+  onProfile,
   onError
 }: {
   event: CalendarEventView;
   onUpdated: (event: CalendarEventView) => void;
   onOpenCalendarEvent: (eventId: string) => void;
+  onProfile: (profile: UserProfile) => void;
   onError: (error: string | null) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -4142,6 +4149,7 @@ function MessageEventEmbed({
       </div>
       <h3>{event.title}</h3>
       {event.description ? <p>{event.description}</p> : null}
+      <AttendeePreview event={event} onProfile={onProfile} />
       <div className="message-event-actions">
         <button className="event-opt-button" onClick={follow} disabled={busy || event.viewerOptedIn}>
           {busy ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
@@ -5241,10 +5249,12 @@ function CalendarEventCard({
 
 function CalendarSidePanel({
   events,
-  onProfile
+  onProfile,
+  onOpenEvent
 }: {
   events: CalendarEventView[];
   onProfile: (profile: UserProfile) => void;
+  onOpenEvent: (eventId: string) => void;
 }) {
   const soon = events
     .slice()
@@ -5259,8 +5269,10 @@ function CalendarSidePanel({
       ) : (
         soon.map((event) => (
           <div className="agenda-row" key={event.id}>
-            <strong>{event.title}</strong>
-            <span>{formatShortEventDate(event.startAt)}</span>
+            <button className="agenda-main" type="button" onClick={() => onOpenEvent(event.id)}>
+              <strong>{event.title}</strong>
+              <span>{formatShortEventDate(event.startAt)}</span>
+            </button>
             <AttendeePreview event={event} onProfile={onProfile} />
           </div>
         ))
@@ -6830,6 +6842,7 @@ function formatEventDate(value: string) {
     weekday: "short",
     month: "short",
     day: "numeric",
+    year: "numeric",
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
@@ -6839,6 +6852,7 @@ function formatShortEventDate(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
+    year: "numeric",
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(value));
