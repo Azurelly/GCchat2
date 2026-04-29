@@ -8,7 +8,7 @@ GCChat is a private social hub for one large friend group. It should feel like a
 
 Use the left rail as feature navigation for the shared hub. The top feature is chat. The next feature is the GC calendar. The existing `Server`, `Channel`, and `Membership` database names are legacy MVP implementation details for the single shared hub; do not expose new UI copy that implies people are creating or switching between separate servers unless the user explicitly changes direction.
 
-User-facing product notes live in `docs/product.md`.
+User-facing product notes live in `docs/product.md`. A fuller handoff for future Codex sessions lives in `docs/codex-handoff.md`; read it when starting substantial work in a new chat.
 
 ## Desktop Distribution And Auto-Update
 
