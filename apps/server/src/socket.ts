@@ -26,6 +26,8 @@ interface VoicePresence {
   serverMuted: boolean;
   serverDeafened: boolean;
   screenSharing: boolean;
+  cameraOn: boolean;
+  viewingStreamId: string | null;
   reconnecting: boolean;
   joinedAt: string;
   updatedAt: string;
@@ -177,6 +179,8 @@ export function attachRealtime(
           serverMuted: moderation.serverMuted,
           serverDeafened: moderation.serverDeafened,
           screenSharing: existing?.screenSharing ?? false,
+          cameraOn: existing?.cameraOn ?? false,
+          viewingStreamId: existing?.viewingStreamId ?? null,
           reconnecting: false,
           joinedAt: existing?.joinedAt ?? now,
           updatedAt: now
@@ -188,7 +192,9 @@ export function attachRealtime(
           existing.selfDeafened !== nextPresence.selfDeafened ||
           existing.serverMuted !== nextPresence.serverMuted ||
           existing.serverDeafened !== nextPresence.serverDeafened ||
-          existing.screenSharing !== nextPresence.screenSharing;
+          existing.screenSharing !== nextPresence.screenSharing ||
+          existing.cameraOn !== nextPresence.cameraOn ||
+          existing.viewingStreamId !== nextPresence.viewingStreamId;
 
         clearVoiceReconnectTimer(socket.data.user.id);
         registerVoiceSocket(socket.data.user.id, socket.id);
@@ -256,6 +262,8 @@ export function attachRealtime(
           serverMuted: moderation.serverMuted,
           serverDeafened: moderation.serverDeafened,
           screenSharing: false,
+          cameraOn: false,
+          viewingStreamId: null,
           reconnecting: false,
           joinedAt: now,
           updatedAt: now
@@ -271,6 +279,11 @@ export function attachRealtime(
           selfMuted: selfDeafened || (moderated ? basePresence.selfMuted : requestedSelfMuted),
           selfDeafened,
           screenSharing: payload.screenSharing ?? basePresence.screenSharing,
+          cameraOn: payload.cameraOn ?? basePresence.cameraOn,
+          viewingStreamId:
+            "viewingStreamId" in payload
+              ? normalizeViewingStreamId(payload.viewingStreamId)
+              : basePresence.viewingStreamId,
           reconnecting: false,
           updatedAt: now
         };
@@ -280,6 +293,8 @@ export function attachRealtime(
           existing.selfMuted !== next.selfMuted ||
           existing.selfDeafened !== next.selfDeafened ||
           existing.screenSharing !== next.screenSharing ||
+          existing.cameraOn !== next.cameraOn ||
+          existing.viewingStreamId !== next.viewingStreamId ||
           existing.reconnecting;
 
         clearVoiceReconnectTimer(socket.data.user.id);
@@ -444,6 +459,8 @@ export function attachRealtime(
             serverMuted: presence.serverMuted,
             serverDeafened: presence.serverDeafened,
             screenSharing: presence.screenSharing,
+            cameraOn: presence.cameraOn,
+            viewingStreamId: presence.viewingStreamId,
             reconnecting: presence.reconnecting,
             joinedAt: presence.joinedAt,
             updatedAt: presence.updatedAt
@@ -597,10 +614,21 @@ function toVoiceParticipantState(presence: VoicePresence): VoiceParticipantState
     serverMuted: presence.serverMuted,
     serverDeafened: presence.serverDeafened,
     screenSharing: presence.screenSharing,
+    cameraOn: presence.cameraOn,
+    viewingStreamId: presence.viewingStreamId,
     reconnecting: presence.reconnecting,
     joinedAt: presence.joinedAt,
     updatedAt: presence.updatedAt
   };
+}
+
+function normalizeViewingStreamId(streamId: string | null | undefined) {
+  if (typeof streamId !== "string") {
+    return null;
+  }
+
+  const trimmed = streamId.trim();
+  return trimmed.length > 0 && trimmed.length <= 80 ? trimmed : null;
 }
 
 function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {

@@ -13,6 +13,8 @@ import {
   Ban,
   Bell,
   CalendarDays,
+  Camera,
+  CameraOff,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -104,6 +106,7 @@ const localVoiceMuteStorageKey = "gcchat.local-voice-mutes";
 const eventTokenPattern = /\[\[gc-event:([^\]]+)]]/g;
 const youtubeUrlPattern =
   /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?[^\s<)]*v=|shorts\/|live\/|embed\/)|youtu\.be\/)[^\s<)]*/gi;
+const maxMessageAttachments = 4;
 
 const defaultEmojis = [
   { name: "grinning", emoji: "😀" },
@@ -172,6 +175,8 @@ interface VoiceParticipantView {
   isServerDeafened: boolean;
   isSpeaking: boolean;
   isScreenSharing: boolean;
+  isCameraOn: boolean;
+  viewingStreamId: string | null;
   reconnecting: boolean;
   profile: UserProfile | null;
   volume: number;
@@ -179,8 +184,10 @@ interface VoiceParticipantView {
 }
 
 interface ScreenShareView {
+  id: string;
   userId: string;
   name: string;
+  kind: "screen" | "camera";
   isLocal: boolean;
   profile: UserProfile | null;
   track: LocalTrack | RemoteTrack | null;
@@ -239,8 +246,9 @@ export function App() {
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceDeafened, setVoiceDeafened] = useState(false);
   const [voiceSharing, setVoiceSharing] = useState(false);
+  const [voiceCameraOn, setVoiceCameraOn] = useState(false);
   const [screenShares, setScreenShares] = useState<ScreenShareView[]>([]);
-  const [selectedStreamUserId, setSelectedStreamUserId] = useState<string | null>(null);
+  const [selectedStreamKey, setSelectedStreamKey] = useState<string | null>(null);
   const [screenSourcePicker, setScreenSourcePicker] = useState<ScreenSourcePreview[] | null>(null);
   const screenSourceResolverRef = useRef<((source: ScreenSourcePreview | null) => void) | null>(null);
   const [voiceDiagnosticsOpen, setVoiceDiagnosticsOpen] = useState(false);
@@ -259,6 +267,9 @@ export function App() {
   const voiceMutedRef = useRef(false);
   const voiceDeafenedRef = useRef(false);
   const voiceSharingRef = useRef(false);
+  const voiceCameraOnRef = useRef(false);
+  const cameraStartingRef = useRef(false);
+  const voiceViewingStreamIdRef = useRef<string | null>(null);
   const voiceDiagnosticsRef = useRef<VoiceDiagnosticEntry[]>([]);
   const voiceDiagnosticCounterRef = useRef(0);
   const voiceParticipantsSignatureRef = useRef("");
@@ -367,6 +378,10 @@ export function App() {
   useEffect(() => {
     voiceSharingRef.current = voiceSharing;
   }, [voiceSharing]);
+
+  useEffect(() => {
+    voiceCameraOnRef.current = voiceCameraOn;
+  }, [voiceCameraOn]);
 
   useEffect(() => {
     voiceServerStateRef.current = voiceServerState;
@@ -484,7 +499,12 @@ export function App() {
         screenSharing:
           voiceSharingRef.current ||
           screenShareStartingRef.current ||
-          isParticipantScreenSharing(room.localParticipant)
+          isParticipantScreenSharing(room.localParticipant),
+        cameraOn:
+          voiceCameraOnRef.current ||
+          cameraStartingRef.current ||
+          isParticipantCameraOn(room.localParticipant),
+        viewingStreamId: voiceViewingStreamIdRef.current
       });
 
       appendVoiceDiagnostic("presence:self-state-ack", {
@@ -569,7 +589,10 @@ export function App() {
     (room: Room | null) => {
       if (!room || !session) {
         setScreenShares([]);
+        voiceSharingRef.current = false;
+        voiceCameraOnRef.current = false;
         setVoiceSharing(false);
+        setVoiceCameraOn(false);
         return;
       }
 
@@ -584,22 +607,28 @@ export function App() {
           track?: LocalTrack | RemoteTrack | null;
           isMuted?: boolean;
         }>;
-        const screenPublication = publications.find((publication) => publication.source === Track.Source.ScreenShare);
 
-        if (!screenPublication) {
-          return;
+        for (const kind of ["screen", "camera"] as const) {
+          const source = kind === "screen" ? Track.Source.ScreenShare : Track.Source.Camera;
+          const publication = publications.find((candidate) => candidate.source === source);
+
+          if (!publication) {
+            continue;
+          }
+
+          const status = getParticipantVideoStatus(participant, source);
+
+          nextShares.push({
+            id: getVideoStreamId(participant.identity, kind),
+            userId: participant.identity,
+            name: profile?.displayName ?? participant.name ?? participant.identity,
+            kind,
+            isLocal,
+            profile,
+            track: publication.track ?? null,
+            status: status ?? "starting"
+          });
         }
-
-        const status = getParticipantScreenShareStatus(participant);
-
-        nextShares.push({
-          userId: participant.identity,
-          name: profile?.displayName ?? participant.name ?? participant.identity,
-          isLocal,
-          profile,
-          track: screenPublication.track ?? null,
-          status: status ?? "starting"
-        });
       };
 
       addParticipantShare(room.localParticipant, true);
@@ -610,10 +639,15 @@ export function App() {
       setScreenShares(nextShares);
       const localSharing =
         screenShareStartingRef.current ||
-        nextShares.some((share) => share.userId === session.user.id && share.status !== "ended");
+        nextShares.some((share) => share.userId === session.user.id && share.kind === "screen" && share.status !== "ended");
+      const localCameraOn =
+        cameraStartingRef.current ||
+        nextShares.some((share) => share.userId === session.user.id && share.kind === "camera" && share.status !== "ended");
 
       voiceSharingRef.current = localSharing;
+      voiceCameraOnRef.current = localCameraOn;
       setVoiceSharing(localSharing);
+      setVoiceCameraOn(localCameraOn);
     },
     [session]
   );
@@ -643,6 +677,8 @@ export function App() {
           serverMuted: false,
           serverDeafened: false,
           screenSharing: voiceSharingRef.current,
+          cameraOn: voiceCameraOnRef.current,
+          viewingStreamId: voiceViewingStreamIdRef.current,
           reconnecting: true,
           joinedAt: voiceJoinedAtRef.current ?? now,
           updatedAt: now
@@ -659,6 +695,7 @@ export function App() {
             : currentSession.members.find((member) => member.id === participantState.userId) ?? null;
         const liveMuted = liveParticipant ? isParticipantAudioMuted(liveParticipant) : participantState.selfMuted;
         const liveScreenSharing = liveParticipant ? isParticipantScreenSharing(liveParticipant) : false;
+        const liveCameraOn = liveParticipant ? isParticipantCameraOn(liveParticipant) : false;
         const locallyMuted = locallyMutedVoiceUsersRef.current.includes(participantState.userId);
 
         return {
@@ -675,6 +712,8 @@ export function App() {
           isServerDeafened: participantState.serverDeafened,
           isSpeaking: liveParticipant?.isSpeaking ?? false,
           isScreenSharing: participantState.screenSharing || liveScreenSharing,
+          isCameraOn: participantState.cameraOn || liveCameraOn,
+          viewingStreamId: participantState.viewingStreamId ?? null,
           reconnecting: participantState.reconnecting,
           profile,
           volume: voiceVolumesRef.current[participantState.userId] ?? 100,
@@ -691,6 +730,8 @@ export function App() {
             participant.isMuted ? "m" : "u",
             participant.isDeafened ? "d" : "h",
             participant.isScreenSharing ? "s" : "n",
+            participant.isCameraOn ? "cam" : "nocam",
+            participant.viewingStreamId ?? "view:none",
             participant.reconnecting ? "r" : "c",
             participant.isSpeaking ? "talking" : "silent"
           ].join(":")
@@ -770,18 +811,23 @@ export function App() {
     voiceRoomRef.current = null;
     voiceJoinedAtRef.current = null;
     void room?.localParticipant.setScreenShareEnabled(false).catch(() => undefined);
+    void room?.localParticipant.setCameraEnabled(false).catch(() => undefined);
     room?.disconnect();
     screenShareStartingRef.current = false;
+    cameraStartingRef.current = false;
     voiceMutedRef.current = false;
     voiceDeafenedRef.current = false;
     voiceSharingRef.current = false;
+    voiceCameraOnRef.current = false;
+    voiceViewingStreamIdRef.current = null;
     clearVoiceAudio();
     setVoiceStatus("disconnected");
     setVoiceMuted(false);
     setVoiceDeafened(false);
     setVoiceSharing(false);
+    setVoiceCameraOn(false);
     setScreenShares([]);
-    setSelectedStreamUserId(null);
+    setSelectedStreamKey(null);
   }, [appendVoiceDiagnostic, clearVoiceAudio, session?.user.id]);
 
   const handleVoiceJoin = async () => {
@@ -857,32 +903,37 @@ export function App() {
         syncScreenShares(room);
         applyVoiceAudioPreferences(room);
       };
-      const syncLocalScreenSharePresence = () => {
+      const syncLocalVideoPresence = () => {
         if (!room || staleVoiceRoomsRef.current.has(room)) {
-          appendVoiceDiagnostic("screen-share:stale-presence-ignored", {
+          appendVoiceDiagnostic("video:stale-presence-ignored", {
             room: describeVoiceRoom(room)
           });
           return;
         }
 
         const wasSharing = voiceSharingRef.current;
+        const wasCameraOn = voiceCameraOnRef.current;
 
         sync();
 
         const localSharing = screenShareStartingRef.current || isParticipantScreenSharing(room.localParticipant);
+        const localCameraOn = cameraStartingRef.current || isParticipantCameraOn(room.localParticipant);
 
-        if (wasSharing === localSharing) {
+        if (wasSharing === localSharing && wasCameraOn === localCameraOn) {
           return;
         }
 
         voiceSharingRef.current = localSharing;
+        voiceCameraOnRef.current = localCameraOn;
         setVoiceSharing(localSharing);
-        void emitVoiceSelfState({ screenSharing: localSharing })
+        setVoiceCameraOn(localCameraOn);
+        void emitVoiceSelfState({ screenSharing: localSharing, cameraOn: localCameraOn })
           .then((state) => state && setVoiceServerState(state))
           .catch((requestError) =>
-            appendVoiceDiagnostic("screen-share:self-state-error", {
+            appendVoiceDiagnostic("video:self-state-error", {
               error: getMessage(requestError),
-              localSharing
+              localSharing,
+              localCameraOn
             })
           );
       };
@@ -939,8 +990,8 @@ export function App() {
         });
         sync();
       });
-      room.on(RoomEvent.LocalTrackPublished, syncLocalScreenSharePresence);
-      room.on(RoomEvent.LocalTrackUnpublished, syncLocalScreenSharePresence);
+      room.on(RoomEvent.LocalTrackPublished, syncLocalVideoPresence);
+      room.on(RoomEvent.LocalTrackUnpublished, syncLocalVideoPresence);
       room.on(RoomEvent.Reconnecting, () => {
         appendVoiceDiagnostic("livekit:reconnecting", describeVoiceRoom(room));
         setVoiceStatus("reconnecting");
@@ -991,12 +1042,15 @@ export function App() {
         voiceMutedRef.current = false;
         voiceDeafenedRef.current = false;
         voiceSharingRef.current = false;
+        voiceCameraOnRef.current = false;
+        voiceViewingStreamIdRef.current = null;
         setVoiceStatus("disconnected");
         setVoiceMuted(false);
         setVoiceDeafened(false);
         setVoiceSharing(false);
+        setVoiceCameraOn(false);
         setScreenShares([]);
-        setSelectedStreamUserId(null);
+        setSelectedStreamKey(null);
       });
 
       await room.connect(credentials.url, credentials.token, { autoSubscribe: true });
@@ -1006,6 +1060,7 @@ export function App() {
       setVoiceStatus("connected");
       setVoiceMuted(false);
       setVoiceDeafened(false);
+      setVoiceCameraOn(false);
       appendVoiceDiagnostic("join:livekit-connected", describeVoiceRoom(room));
       const voiceState = await announceVoicePresence("join");
       joinedVoicePresence = Boolean(voiceState);
@@ -1123,7 +1178,7 @@ export function App() {
         screenShareStartingRef.current = false;
         voiceSharingRef.current = false;
         setVoiceSharing(false);
-        setSelectedStreamUserId((current) => (current === session.user.id ? null : current));
+        setSelectedStreamKey((current) => (current === getVideoStreamId(session.user.id, "screen") ? null : current));
         appendVoiceDiagnostic("screen-share:stop", describeVoiceRoom(room));
         const state = await emitVoiceSelfState({ screenSharing: false });
         if (state) {
@@ -1156,7 +1211,7 @@ export function App() {
       if (state) {
         setVoiceServerState(state);
       }
-      setSelectedStreamUserId(session.user.id);
+      setSelectedStreamKey(getVideoStreamId(session.user.id, "screen"));
       syncScreenShares(room);
     } catch (requestError) {
       screenShareStartingRef.current = false;
@@ -1164,6 +1219,54 @@ export function App() {
       setVoiceSharing(false);
       void emitVoiceSelfState({ screenSharing: false });
       appendVoiceDiagnostic("screen-share:error", { error: getMessage(requestError) });
+      setError(getMessage(requestError));
+    }
+  };
+
+  const handleCameraToggle = async () => {
+    const room = voiceRoomRef.current;
+
+    if (!room || voiceStatus !== "connected" || !session) {
+      setError("Join voice before turning on your camera.");
+      return;
+    }
+
+    try {
+      if (voiceCameraOn) {
+        await room.localParticipant.setCameraEnabled(false);
+        cameraStartingRef.current = false;
+        voiceCameraOnRef.current = false;
+        setVoiceCameraOn(false);
+        setSelectedStreamKey((current) => (current === getVideoStreamId(session.user.id, "camera") ? null : current));
+        appendVoiceDiagnostic("camera:stop", describeVoiceRoom(room));
+        const state = await emitVoiceSelfState({ cameraOn: false });
+        if (state) {
+          setVoiceServerState(state);
+        }
+        syncScreenShares(room);
+        return;
+      }
+
+      cameraStartingRef.current = true;
+      voiceCameraOnRef.current = true;
+      setVoiceCameraOn(true);
+      appendVoiceDiagnostic("camera:start", describeVoiceRoom(room));
+      await room.localParticipant.setCameraEnabled(true);
+      cameraStartingRef.current = false;
+      voiceCameraOnRef.current = true;
+      setVoiceCameraOn(true);
+      const state = await emitVoiceSelfState({ cameraOn: true });
+      if (state) {
+        setVoiceServerState(state);
+      }
+      setSelectedStreamKey(getVideoStreamId(session.user.id, "camera"));
+      syncScreenShares(room);
+    } catch (requestError) {
+      cameraStartingRef.current = false;
+      voiceCameraOnRef.current = false;
+      setVoiceCameraOn(false);
+      void emitVoiceSelfState({ cameraOn: false });
+      appendVoiceDiagnostic("camera:error", { error: getMessage(requestError) });
       setError(getMessage(requestError));
     }
   };
@@ -1302,16 +1405,42 @@ export function App() {
   }, [applyVoiceAudioPreferences, locallyMutedVoiceUsers, syncVoiceParticipants, voiceDeafened, voiceVolumes]);
 
   useEffect(() => {
-    if (!selectedStreamUserId) {
+    if (!selectedStreamKey) {
       return;
     }
 
-    const selectedShare = screenShares.find((share) => share.userId === selectedStreamUserId);
+    const selectedShare = screenShares.find((share) => share.id === selectedStreamKey);
 
     if (!selectedShare) {
-      setSelectedStreamUserId(null);
+      setSelectedStreamKey(null);
     }
-  }, [screenShares, selectedStreamUserId]);
+  }, [screenShares, selectedStreamKey]);
+
+  useEffect(() => {
+    const selectedShare = selectedStreamKey
+      ? screenShares.find((share) => share.id === selectedStreamKey) ?? null
+      : null;
+    const viewingStreamId = selectedShare?.id ?? null;
+
+    if (voiceViewingStreamIdRef.current === viewingStreamId) {
+      return;
+    }
+
+    voiceViewingStreamIdRef.current = viewingStreamId;
+
+    if (!voiceRoomRef.current || !socketRef.current?.connected) {
+      return;
+    }
+
+    void emitVoiceSelfState({ viewingStreamId })
+      .then((state) => state && setVoiceServerState(state))
+      .catch((requestError) =>
+        appendVoiceDiagnostic("stream-watch:self-state-error", {
+          error: getMessage(requestError),
+          viewingStreamId
+        })
+      );
+  }, [appendVoiceDiagnostic, emitVoiceSelfState, screenShares, selectedStreamKey]);
 
   useEffect(() => {
     const room = voiceRoomRef.current;
@@ -1812,8 +1941,8 @@ export function App() {
   const currentChannel = activeChannel ?? session.channel;
   const canManageEmojis = hasAtLeastRole(session.user.role, "ADMIN");
   const canViewAudit = session.user.role === "SUPER_ADMIN";
-  const selectedStream = selectedStreamUserId
-    ? screenShares.find((share) => share.userId === selectedStreamUserId) ?? null
+  const selectedStream = selectedStreamKey
+    ? screenShares.find((share) => share.id === selectedStreamKey) ?? null
     : null;
 
   return (
@@ -1865,13 +1994,13 @@ export function App() {
           activeVoiceView={voiceViewOpen}
           onChannelSelect={(channelId) => {
             setVoiceViewOpen(false);
-            setSelectedStreamUserId(null);
+            setSelectedStreamKey(null);
             setActiveChannelId(channelId);
           }}
           onVoiceChannelSelect={() => {
             setActiveFeature("chat");
             setVoiceViewOpen(true);
-            setSelectedStreamUserId(null);
+            setSelectedStreamKey(null);
           }}
           onChannelCreated={handleChannelCreated}
           onDeleteChannel={setDeleteChannel}
@@ -1883,6 +2012,7 @@ export function App() {
           voiceMuted={voiceMuted}
           voiceDeafened={voiceDeafened}
           voiceSharing={voiceSharing}
+          voiceCameraOn={voiceCameraOn}
           voiceParticipants={voiceParticipants}
           screenShares={screenShares}
           onVoiceJoin={() => void handleVoiceJoin()}
@@ -1890,7 +2020,8 @@ export function App() {
           onVoiceMuteToggle={() => void handleVoiceMuteToggle()}
           onVoiceDeafenToggle={() => void handleVoiceDeafenToggle()}
           onScreenShareToggle={() => void handleScreenShareToggle()}
-          onWatchStream={setSelectedStreamUserId}
+          onCameraToggle={() => void handleCameraToggle()}
+          onWatchStream={setSelectedStreamKey}
           onVoiceProfile={setSelectedProfile}
           voiceDiagnosticsCount={voiceDiagnostics.length}
           onOpenVoiceDiagnostics={() => setVoiceDiagnosticsOpen(true)}
@@ -1945,11 +2076,13 @@ export function App() {
               muted={voiceMuted}
               deafened={voiceDeafened}
               sharing={voiceSharing}
-              onSelectStream={setSelectedStreamUserId}
-              onExit={() => setSelectedStreamUserId(null)}
+              cameraOn={voiceCameraOn}
+              onSelectStream={setSelectedStreamKey}
+              onExit={() => setSelectedStreamKey(null)}
               onToggleMute={() => void handleVoiceMuteToggle()}
               onToggleDeafen={() => void handleVoiceDeafenToggle()}
               onToggleScreenShare={() => void handleScreenShareToggle()}
+              onToggleCamera={() => void handleCameraToggle()}
               onDisconnect={disconnectVoice}
             />
           ) : voiceViewOpen ? (
@@ -1960,11 +2093,13 @@ export function App() {
               muted={voiceMuted}
               deafened={voiceDeafened}
               sharing={voiceSharing}
+              cameraOn={voiceCameraOn}
               onJoin={() => void handleVoiceJoin()}
               onToggleMute={() => void handleVoiceMuteToggle()}
               onToggleDeafen={() => void handleVoiceDeafenToggle()}
               onToggleScreenShare={() => void handleScreenShareToggle()}
-              onWatchStream={setSelectedStreamUserId}
+              onToggleCamera={() => void handleCameraToggle()}
+              onWatchStream={setSelectedStreamKey}
             />
           ) : (
             <>
@@ -2302,6 +2437,7 @@ function ChannelSidebar({
   voiceMuted,
   voiceDeafened,
   voiceSharing,
+  voiceCameraOn,
   voiceParticipants,
   screenShares,
   onVoiceJoin,
@@ -2309,6 +2445,7 @@ function ChannelSidebar({
   onVoiceMuteToggle,
   onVoiceDeafenToggle,
   onScreenShareToggle,
+  onCameraToggle,
   onWatchStream,
   onVoiceProfile,
   voiceDiagnosticsCount,
@@ -2332,6 +2469,7 @@ function ChannelSidebar({
   voiceMuted: boolean;
   voiceDeafened: boolean;
   voiceSharing: boolean;
+  voiceCameraOn: boolean;
   voiceParticipants: VoiceParticipantView[];
   screenShares: ScreenShareView[];
   onVoiceJoin: () => void;
@@ -2339,7 +2477,8 @@ function ChannelSidebar({
   onVoiceMuteToggle: () => void;
   onVoiceDeafenToggle: () => void;
   onScreenShareToggle: () => void;
-  onWatchStream: (userId: string) => void;
+  onCameraToggle: () => void;
+  onWatchStream: (streamId: string) => void;
   onVoiceProfile: (profile: UserProfile) => void;
   voiceDiagnosticsCount: number;
   onOpenVoiceDiagnostics: () => void;
@@ -2442,6 +2581,7 @@ function ChannelSidebar({
           muted={voiceMuted}
           deafened={voiceDeafened}
           sharing={voiceSharing}
+          cameraOn={voiceCameraOn}
           participants={voiceParticipants}
           screenShares={screenShares}
           selected={activeVoiceView}
@@ -2451,6 +2591,7 @@ function ChannelSidebar({
           onToggleMute={onVoiceMuteToggle}
           onToggleDeafen={onVoiceDeafenToggle}
           onToggleScreenShare={onScreenShareToggle}
+          onToggleCamera={onCameraToggle}
           onWatchStream={onWatchStream}
           onProfile={onVoiceProfile}
           onSetVolume={onSetVoiceVolume}
@@ -2465,12 +2606,14 @@ function ChannelSidebar({
           muted={voiceMuted}
           deafened={voiceDeafened}
           sharing={voiceSharing}
+          cameraOn={voiceCameraOn}
           participants={voiceParticipants}
           onJoin={onVoiceJoin}
           onLeave={onVoiceLeave}
           onToggleMute={onVoiceMuteToggle}
           onToggleDeafen={onVoiceDeafenToggle}
           onToggleScreenShare={onScreenShareToggle}
+          onToggleCamera={onCameraToggle}
           diagnosticsCount={voiceDiagnosticsCount}
           onOpenDiagnostics={onOpenVoiceDiagnostics}
         />
@@ -2500,6 +2643,7 @@ function VoiceChannelSection({
   muted,
   deafened,
   sharing,
+  cameraOn,
   participants,
   screenShares,
   selected,
@@ -2509,6 +2653,7 @@ function VoiceChannelSection({
   onToggleMute,
   onToggleDeafen,
   onToggleScreenShare,
+  onToggleCamera,
   onWatchStream,
   onProfile,
   onSetVolume,
@@ -2520,6 +2665,7 @@ function VoiceChannelSection({
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
+  cameraOn: boolean;
   participants: VoiceParticipantView[];
   screenShares: ScreenShareView[];
   selected: boolean;
@@ -2529,7 +2675,8 @@ function VoiceChannelSection({
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onToggleScreenShare: () => void;
-  onWatchStream: (userId: string) => void;
+  onToggleCamera: () => void;
+  onWatchStream: (streamId: string) => void;
   onProfile: (profile: UserProfile) => void;
   onSetVolume: (userId: string, volume: number) => void;
   onToggleLocalMute: (userId: string) => void;
@@ -2564,7 +2711,7 @@ function VoiceChannelSection({
   };
 
   const openStreamPreview = (event: React.MouseEvent<HTMLElement>, participant: VoiceParticipantView) => {
-    if (!participant.isScreenSharing) {
+    if (!participant.isScreenSharing && !participant.isCameraOn) {
       return;
     }
 
@@ -2624,7 +2771,9 @@ function VoiceChannelSection({
             <div className="voice-participant-list">
               {participants.map((participant) => (
                 <div
-                  className={`voice-participant-row ${participant.isScreenSharing ? "has-stream" : ""}`}
+                  className={`voice-participant-row ${
+                    participant.isScreenSharing || participant.isCameraOn ? "has-stream" : ""
+                  }`}
                   key={participant.userId}
                   onMouseEnter={(event) => openStreamPreview(event, participant)}
                   onMouseLeave={schedulePreviewClose}
@@ -2652,25 +2801,50 @@ function VoiceChannelSection({
                     <span className="voice-fallback-avatar">{participant.name.slice(0, 2).toUpperCase()}</span>
                   )}
                   <span>{participant.isLocal ? `${participant.name} (you)` : participant.name}</span>
-                  {participant.isScreenSharing ? (
-                    <span
-                      className="live-badge"
-                      role="button"
-                      tabIndex={0}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onWatchStream(participant.userId);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onWatchStream(participant.userId);
-                        }
-                      }}
-                      title="Sharing screen"
-                    >
-                      LIVE
+                  {participant.isCameraOn || participant.isScreenSharing ? (
+                    <span className="video-badges">
+                      {participant.isCameraOn ? (
+                        <span
+                          className="camera-badge"
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onWatchStream(getVideoStreamId(participant.userId, "camera"));
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onWatchStream(getVideoStreamId(participant.userId, "camera"));
+                            }
+                          }}
+                          title="Camera on"
+                        >
+                          <Camera size={13} />
+                        </span>
+                      ) : null}
+                      {participant.isScreenSharing ? (
+                        <span
+                          className="live-badge"
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onWatchStream(getVideoStreamId(participant.userId, "screen"));
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onWatchStream(getVideoStreamId(participant.userId, "screen"));
+                            }
+                          }}
+                          title="Sharing screen"
+                        >
+                          LIVE
+                        </span>
+                      ) : null}
                     </span>
                   ) : null}
                   {participant.isServerMuted ? (
@@ -2692,9 +2866,11 @@ function VoiceChannelSection({
             muted={muted}
             deafened={deafened}
             sharing={sharing}
+            cameraOn={cameraOn}
             onToggleMute={onToggleMute}
             onToggleDeafen={onToggleDeafen}
             onToggleScreenShare={onToggleScreenShare}
+            onToggleCamera={onToggleCamera}
             onLeave={onLeave}
           /> : null}
           {contextMenu ? (
@@ -2714,12 +2890,15 @@ function VoiceChannelSection({
           ) : null}
           {hoverPreview ? (
             <StreamHoverPreview
-              stream={screenShares.find((share) => share.userId === hoverPreview.participant.userId) ?? null}
+              stream={getPreferredVideoStream(screenShares, hoverPreview.participant.userId)}
               position={{ x: hoverPreview.x, y: hoverPreview.y }}
               onMouseEnter={clearPreviewCloseTimer}
               onMouseLeave={schedulePreviewClose}
               onWatch={() => {
-                onWatchStream(hoverPreview.participant.userId);
+                const stream = getPreferredVideoStream(screenShares, hoverPreview.participant.userId);
+                if (stream) {
+                  onWatchStream(stream.id);
+                }
                 setHoverPreview(null);
               }}
             />
@@ -2736,17 +2915,21 @@ function VoiceControlRow({
   muted,
   deafened,
   sharing,
+  cameraOn,
   onToggleMute,
   onToggleDeafen,
   onToggleScreenShare,
+  onToggleCamera,
   onLeave
 }: {
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
+  cameraOn: boolean;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onToggleScreenShare: () => void;
+  onToggleCamera: () => void;
   onLeave: () => void;
 }) {
   return (
@@ -2776,6 +2959,14 @@ function VoiceControlRow({
               {sharing ? <MonitorX size={16} /> : <MonitorUp size={16} />}
             </button>
             <button
+              className={`voice-control-button ${cameraOn ? "active" : ""}`}
+              type="button"
+              onClick={onToggleCamera}
+              title={cameraOn ? "Turn off camera" : "Turn on camera"}
+            >
+              {cameraOn ? <Camera size={16} /> : <CameraOff size={16} />}
+            </button>
+            <button
               className="voice-control-button danger"
               type="button"
               onClick={onLeave}
@@ -2792,12 +2983,14 @@ function VoiceStatusBar({
   muted,
   deafened,
   sharing,
+  cameraOn,
   participants,
   onJoin,
   onLeave,
   onToggleMute,
   onToggleDeafen,
   onToggleScreenShare,
+  onToggleCamera,
   diagnosticsCount,
   onOpenDiagnostics
 }: {
@@ -2805,12 +2998,14 @@ function VoiceStatusBar({
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
+  cameraOn: boolean;
   participants: VoiceParticipantView[];
   onJoin: () => void;
   onLeave: () => void;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onToggleScreenShare: () => void;
+  onToggleCamera: () => void;
   diagnosticsCount: number;
   onOpenDiagnostics: () => void;
 }) {
@@ -2856,6 +3051,14 @@ function VoiceStatusBar({
               title={sharing ? "Stop sharing" : "Share screen"}
             >
               {sharing ? <MonitorX size={15} /> : <MonitorUp size={15} />}
+            </button>
+            <button
+              type="button"
+              className={`voice-status-button ${cameraOn ? "active" : ""}`}
+              onClick={onToggleCamera}
+              title={cameraOn ? "Turn off camera" : "Turn on camera"}
+            >
+              {cameraOn ? <Camera size={15} /> : <CameraOff size={15} />}
             </button>
             <button type="button" className="voice-status-button danger" onClick={onLeave} title="Disconnect">
               <PhoneOff size={15} />
@@ -3068,8 +3271,14 @@ function StreamHoverPreview({
       onMouseLeave={onMouseLeave}
     >
       <div className="stream-hover-header">
-        <span>Streaming Now</span>
-        <em>LIVE</em>
+        <span>{stream?.kind === "camera" ? "Camera On" : "Streaming Now"}</span>
+        {stream?.kind === "camera" ? (
+          <em className="camera-live-badge">
+            <Camera size={12} />
+          </em>
+        ) : (
+          <em>LIVE</em>
+        )}
       </div>
       <div className="stream-preview-frame">
         {stream?.track && stream.status === "live" ? (
@@ -3079,8 +3288,8 @@ function StreamHoverPreview({
         )}
       </div>
       <button type="button" onClick={onWatch}>
-        <MonitorUp size={16} />
-        Watch Stream
+        {stream?.kind === "camera" ? <Camera size={16} /> : <MonitorUp size={16} />}
+        {stream?.kind === "camera" ? "Watch Camera" : "Watch Stream"}
       </button>
     </div>
   );
@@ -3093,10 +3302,12 @@ function VoicePreviewStage({
   muted,
   deafened,
   sharing,
+  cameraOn,
   onJoin,
   onToggleMute,
   onToggleDeafen,
   onToggleScreenShare,
+  onToggleCamera,
   onWatchStream
 }: {
   participants: VoiceParticipantView[];
@@ -3105,11 +3316,13 @@ function VoicePreviewStage({
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
+  cameraOn: boolean;
   onJoin: () => void;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onToggleScreenShare: () => void;
-  onWatchStream: (userId: string) => void;
+  onToggleCamera: () => void;
+  onWatchStream: (streamId: string) => void;
 }) {
   const connected = status === "connected";
   const connecting = status === "connecting";
@@ -3119,37 +3332,42 @@ function VoicePreviewStage({
       <div className="voice-preview-grid">
         {participants.length > 0 ? (
           participants.map((participant) => {
-            const stream = screenShares.find((share) => share.userId === participant.userId) ?? null;
-            const sharingScreen = participant.isScreenSharing || Boolean(stream);
+            const stream = getPreferredVideoStream(screenShares, participant.userId);
+            const hasVideo = participant.isScreenSharing || participant.isCameraOn || Boolean(stream);
 
             return (
-              <article className={`voice-preview-card ${sharingScreen ? "streaming" : ""}`} key={participant.userId}>
+              <article className={`voice-preview-card ${hasVideo ? "streaming" : ""}`} key={participant.userId}>
                 <div className="voice-preview-frame">
                   {stream?.track && stream.status === "live" ? (
                     <TrackVideo track={stream.track} muted />
-                  ) : sharingScreen ? (
+                  ) : hasVideo ? (
                     <div className="voice-preview-stream-placeholder">
-                      <MonitorUp size={30} />
-                      <span>{stream?.status === "unavailable" ? "Stream unavailable" : "Starting stream..."}</span>
+                      {participant.isCameraOn && !participant.isScreenSharing ? <Camera size={30} /> : <MonitorUp size={30} />}
+                      <span>{stream?.status === "unavailable" ? "Video unavailable" : "Starting video..."}</span>
                     </div>
                   ) : participant.profile ? (
                     <Avatar profile={participant.profile} size="xl" />
                   ) : (
                     <span className="voice-preview-fallback">{participant.name.slice(0, 2).toUpperCase()}</span>
                   )}
-                  {sharingScreen ? (
+                  {hasVideo ? (
                     <button
                       type="button"
                       className="watch-stream-button"
-                      onClick={() => (stream ? onWatchStream(participant.userId) : onJoin())}
+                      onClick={() => (stream ? onWatchStream(stream.id) : onJoin())}
                     >
-                      <MonitorUp size={16} />
-                      {stream ? "Watch Stream" : "Join to Watch"}
+                      {stream?.kind === "camera" ? <Camera size={16} /> : <MonitorUp size={16} />}
+                      {stream ? `Watch ${stream.kind === "camera" ? "Camera" : "Stream"}` : "Join to Watch"}
                     </button>
                   ) : null}
                 </div>
                 <footer>
                   <span>{participant.isLocal ? `${participant.name} (you)` : participant.name}</span>
+                  {participant.isCameraOn ? (
+                    <em className="camera-live-badge">
+                      <Camera size={12} />
+                    </em>
+                  ) : null}
                   {participant.isScreenSharing ? <em>LIVE</em> : null}
                   {participant.isServerMuted ? (
                     <MicOff className="server-muted-icon" size={15} />
@@ -3184,6 +3402,10 @@ function VoicePreviewStage({
               {sharing ? <MonitorX size={18} /> : <MonitorUp size={18} />}
               <span>{sharing ? "Stop Sharing" : "Share Screen"}</span>
             </button>
+            <button type="button" className={cameraOn ? "active" : ""} onClick={onToggleCamera}>
+              {cameraOn ? <Camera size={18} /> : <CameraOff size={18} />}
+              <span>{cameraOn ? "Stop Video" : "Video"}</span>
+            </button>
           </>
         ) : (
           <button type="button" className="join-call-button" onClick={onJoin} disabled={connecting}>
@@ -3204,11 +3426,13 @@ function ScreenShareStage({
   muted,
   deafened,
   sharing,
+  cameraOn,
   onSelectStream,
   onExit,
   onToggleMute,
   onToggleDeafen,
   onToggleScreenShare,
+  onToggleCamera,
   onDisconnect
 }: {
   stream: ScreenShareView;
@@ -3218,11 +3442,13 @@ function ScreenShareStage({
   muted: boolean;
   deafened: boolean;
   sharing: boolean;
-  onSelectStream: (userId: string) => void;
+  cameraOn: boolean;
+  onSelectStream: (streamId: string) => void;
   onExit: () => void;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
   onToggleScreenShare: () => void;
+  onToggleCamera: () => void;
   onDisconnect: () => void;
 }) {
   useEffect(() => {
@@ -3237,13 +3463,17 @@ function ScreenShareStage({
   }, [onExit]);
 
   const liveStreams = allStreams.filter((candidate) => candidate.status === "live");
+  const streamWatchers = participants.filter(
+    (participant) => participant.viewingStreamId === stream.id && participant.profile
+  );
+  const streamNoun = stream.kind === "camera" ? "camera" : "stream";
 
   return (
     <section className="screen-share-stage">
       <header className="stream-stage-header">
         <div>
           <strong>{stream.name}</strong>
-          <span>Watching {stream.isLocal ? "your stream" : `${stream.name}'s stream`}</span>
+          <span>Watching {stream.isLocal ? `your ${streamNoun}` : `${stream.name}'s ${streamNoun}`}</span>
         </div>
         <div className="stream-stage-actions">
           <button type="button" onClick={onToggleMute} title={muted ? "Muted" : "Mute self"}>
@@ -3261,16 +3491,17 @@ function ScreenShareStage({
         </div>
       </header>
       <div className="stream-stage-body">
+        <StreamWatchers watchers={streamWatchers} />
         {stream.track && stream.status === "live" ? (
           <TrackVideo track={stream.track} />
         ) : (
           <div className="stream-ended-state">
-            <MonitorX size={34} />
-            <h2>{stream.status === "unavailable" ? "Stream unavailable" : "Starting stream..."}</h2>
+            {stream.kind === "camera" ? <CameraOff size={34} /> : <MonitorX size={34} />}
+            <h2>{stream.status === "unavailable" ? "Video unavailable" : "Starting video..."}</h2>
             <p>
               {stream.status === "unavailable"
-                ? "The stream is having trouble loading."
-                : "GCChat is waiting for LiveKit to publish the screen track."}
+                ? "The video is having trouble loading."
+                : "GCChat is waiting for LiveKit to publish the video track."}
             </p>
             <button className="secondary-button" type="button" onClick={onExit}>
               Back to chat
@@ -3280,30 +3511,35 @@ function ScreenShareStage({
       </div>
       <footer className="stream-stage-footer discord-stream-footer">
         <div className="stream-call-strip">
-          {participants.map((participant) => {
-            const participantStream = liveStreams.find((candidate) => candidate.userId === participant.userId) ?? null;
-
-            return (
-              <button
-                className={`stream-call-tile ${participant.userId === stream.userId ? "active" : ""}`}
-                key={participant.userId}
-                type="button"
-                onClick={() => participantStream && onSelectStream(participant.userId)}
-              >
-                <div>
-                  {participantStream?.track ? (
-                    <TrackVideo track={participantStream.track} muted />
-                  ) : participant.profile ? (
-                    <Avatar profile={participant.profile} size="lg" />
-                  ) : (
-                    <span className="voice-preview-fallback">{participant.name.slice(0, 2).toUpperCase()}</span>
-                  )}
-                  {participantStream ? <em>LIVE</em> : null}
-                </div>
-                <span>{participant.isLocal ? "You" : participant.name}</span>
-              </button>
-            );
-          })}
+          {liveStreams.map((participantStream) => (
+            <button
+              className={`stream-call-tile ${participantStream.id === stream.id ? "active" : ""}`}
+              key={participantStream.id}
+              type="button"
+              onClick={() => onSelectStream(participantStream.id)}
+            >
+              <div>
+                {participantStream.track ? (
+                  <TrackVideo track={participantStream.track} muted />
+                ) : participantStream.profile ? (
+                  <Avatar profile={participantStream.profile} size="lg" />
+                ) : (
+                  <span className="voice-preview-fallback">{participantStream.name.slice(0, 2).toUpperCase()}</span>
+                )}
+                {participantStream.kind === "camera" ? (
+                  <em className="camera-live-badge">
+                    <Camera size={12} />
+                  </em>
+                ) : (
+                  <em>LIVE</em>
+                )}
+              </div>
+              <span>
+                {participantStream.isLocal ? "You" : participantStream.name}
+                {participantStream.kind === "camera" ? " camera" : " stream"}
+              </span>
+            </button>
+          ))}
         </div>
         <div className="stream-control-dock">
           <button type="button" onClick={onExit}>
@@ -3317,6 +3553,10 @@ function ScreenShareStage({
           <button type="button" className={sharing ? "active" : ""} onClick={onToggleScreenShare}>
             {sharing ? <MonitorX size={18} /> : <MonitorUp size={18} />}
             <span>{sharing ? "Stop Sharing" : "Share Screen"}</span>
+          </button>
+          <button type="button" className={cameraOn ? "active" : ""} onClick={onToggleCamera}>
+            {cameraOn ? <Camera size={18} /> : <CameraOff size={18} />}
+            <span>{cameraOn ? "Stop Video" : "Video"}</span>
           </button>
           <button type="button" className={deafened ? "active" : ""} onClick={onToggleDeafen}>
             {deafened ? <VolumeX size={18} /> : <Volume2 size={18} />}
@@ -3332,6 +3572,24 @@ function ScreenShareStage({
         </span>
       </footer>
     </section>
+  );
+}
+
+function StreamWatchers({ watchers }: { watchers: VoiceParticipantView[] }) {
+  if (watchers.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="stream-watchers" title={`${watchers.length} watching`}>
+      <span>Watching</span>
+      <div>
+        {watchers.slice(0, 5).map((watcher) =>
+          watcher.profile ? <Avatar key={watcher.userId} profile={watcher.profile} size="xs" /> : null
+        )}
+        {watchers.length > 5 ? <em>+{watchers.length - 5}</em> : null}
+      </div>
+    </div>
   );
 }
 
@@ -3791,9 +4049,6 @@ function AudioAttachment({ attachment }: { attachment: MessageView["attachments"
         <button type="button" onClick={() => void togglePlayback()} aria-label={playing ? "Pause" : "Play"}>
           {playing ? <Pause size={22} /> : <Play size={24} />}
         </button>
-        <span className="audio-time">
-          {formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}
-        </span>
         <input
           className="audio-progress"
           type="range"
@@ -3804,6 +4059,9 @@ function AudioAttachment({ attachment }: { attachment: MessageView["attachments"
           onChange={(event) => seek(Number(event.currentTarget.value))}
           aria-label="Audio progress"
         />
+        <span className="audio-time">
+          {formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}
+        </span>
         <Volume2 size={20} />
         <input
           className="audio-volume"
@@ -4216,14 +4474,16 @@ function Composer({
   onEdited: (message: MessageView) => void;
 }) {
   const [draft, setDraft] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [attachedEvent, setAttachedEvent] = useState<CalendarEventView | null>(null);
   const [sending, setSending] = useState(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [eventPickerOpen, setEventPickerOpen] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [emojiSearch, setEmojiSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
   const mentionQuery = getMentionQuery(draft);
   const mentionSuggestions = useMemo(
     () =>
@@ -4241,7 +4501,7 @@ function Composer({
             .slice(0, 8),
     [members, mentionQuery]
   );
-  const canSend = draft.trim().length > 0 || (!editingMessage && (file || attachedEvent));
+  const canSend = draft.trim().length > 0 || (!editingMessage && (files.length > 0 || attachedEvent));
   const filteredDefaultEmojis = useMemo(
     () =>
       defaultEmojis.filter(
@@ -4265,7 +4525,7 @@ function Composer({
     }
 
     setDraft(stripEventTokens(editingMessage.content));
-    setFile(null);
+    setFiles([]);
     setAttachedEvent(null);
     setAttachmentMenuOpen(false);
     setEventPickerOpen(false);
@@ -4276,6 +4536,95 @@ function Composer({
       fileInputRef.current.value = "";
     }
   }, [editingMessage?.id]);
+
+  const addFiles = (incomingFiles: Iterable<File> | null) => {
+    if (editingMessage || !incomingFiles) {
+      return;
+    }
+
+    const nextIncoming = Array.from(incomingFiles).filter((incomingFile) => incomingFile.size > 0);
+
+    if (nextIncoming.length === 0) {
+      return;
+    }
+
+    setFiles((current) => {
+      const availableSlots = maxMessageAttachments - current.length;
+
+      if (availableSlots <= 0) {
+        onError(`You can attach up to ${maxMessageAttachments} files.`);
+        return current;
+      }
+
+      if (nextIncoming.length > availableSlots) {
+        onError(`Added ${availableSlots} file${availableSlots === 1 ? "" : "s"}; messages can include up to ${maxMessageAttachments} attachments.`);
+      } else {
+        onError(null);
+      }
+
+      return [...current, ...nextIncoming.slice(0, availableSlots)];
+    });
+    setAttachmentMenuOpen(false);
+    setEventPickerOpen(false);
+  };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    if (editingMessage) {
+      return;
+    }
+
+    const pastedFiles = getFilesFromDataTransfer(event.clipboardData).map(normalizeClipboardFile);
+
+    if (pastedFiles.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    addFiles(pastedFiles);
+  };
+
+  const handleDragEnter = (event: React.DragEvent<HTMLFormElement>) => {
+    if (editingMessage || !hasTransferFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDraggingFiles(true);
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLFormElement>) => {
+    if (editingMessage || !hasTransferFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLFormElement>) => {
+    if (editingMessage || !hasTransferFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+
+    if (dragDepthRef.current === 0) {
+      setDraggingFiles(false);
+    }
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLFormElement>) => {
+    if (editingMessage || !hasTransferFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDraggingFiles(false);
+    addFiles(getFilesFromDataTransfer(event.dataTransfer));
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -4298,22 +4647,18 @@ function Composer({
     }
 
     const temporaryId = `temp-${crypto.randomUUID()}`;
-    const selectedFile = file;
+    const selectedFiles = files;
     const selectedEvent = attachedEvent;
     const selectedReply = replyTo;
     const content = `${draft.trim()}${selectedEvent ? `\n${createEventToken(selectedEvent.id)}` : ""}`.trim();
-    const localAttachmentUrl = selectedFile ? URL.createObjectURL(selectedFile) : null;
-    const optimisticAttachments: MessageView["attachments"] = selectedFile
-      ? [
-          {
-            id: `${temporaryId}-attachment-0`,
-            url: localAttachmentUrl!,
-            fileName: selectedFile.name,
-            mimeType: selectedFile.type || "application/octet-stream",
-            size: selectedFile.size
-          }
-        ]
-      : [];
+    const localAttachmentUrls = selectedFiles.map((selectedFile) => URL.createObjectURL(selectedFile));
+    const optimisticAttachments: MessageView["attachments"] = selectedFiles.map((selectedFile, index) => ({
+      id: `${temporaryId}-attachment-${index}`,
+      url: localAttachmentUrls[index]!,
+      fileName: selectedFile.name,
+      mimeType: selectedFile.type || "application/octet-stream",
+      size: selectedFile.size
+    }));
     const optimisticMessage: MessageView = {
       id: temporaryId,
       channelId: channel.id,
@@ -4329,7 +4674,7 @@ function Composer({
 
     onOptimisticMessage(optimisticMessage);
     setDraft("");
-    setFile(null);
+    setFiles([]);
     setAttachedEvent(null);
     setAttachmentMenuOpen(false);
     setEventPickerOpen(false);
@@ -4342,10 +4687,10 @@ function Composer({
     }
 
     try {
-      setSending(Boolean(selectedFile));
+      setSending(selectedFiles.length > 0);
       const attachments: CreateMessageRequest["attachments"] = [];
 
-      if (selectedFile) {
+      for (const selectedFile of selectedFiles) {
         const uploaded = await api.upload(selectedFile, "attachment");
         attachments.push({
           url: uploaded.url,
@@ -4378,7 +4723,7 @@ function Composer({
       onFailedMessage(temporaryId, channel.id);
       onError(getMessage(requestError));
     } finally {
-      if (localAttachmentUrl) {
+      for (const localAttachmentUrl of localAttachmentUrls) {
         URL.revokeObjectURL(localAttachmentUrl);
       }
 
@@ -4401,13 +4746,30 @@ function Composer({
   };
 
   return (
-    <form className="composer" onSubmit={submit}>
+    <form
+      className={`composer ${draggingFiles ? "dragging-files" : ""}`}
+      onSubmit={submit}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         hidden
-        onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+        onChange={(event) => {
+          addFiles(event.target.files);
+          event.currentTarget.value = "";
+        }}
       />
+      {draggingFiles && !editingMessage ? (
+        <div className="composer-drop-overlay">
+          <Upload size={22} />
+          <span>Drop files to upload</span>
+        </div>
+      ) : null}
       {mentionSuggestions.length > 0 ? (
         <div className="mention-menu">
           <div className="mention-menu-title">Members</div>
@@ -4525,12 +4887,18 @@ function Composer({
           <Paperclip size={22} />
         </button>
         <div className="composer-input">
-          {file ? (
-            <button type="button" className="file-chip" onClick={() => setFile(null)}>
-              {file.name}
+          {files.map((attachedFile, index) => (
+            <button
+              type="button"
+              className="file-chip"
+              key={`${attachedFile.name}-${attachedFile.lastModified}-${index}`}
+              onClick={() => setFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+              title={attachedFile.name}
+            >
+              {attachedFile.name}
               <X size={14} />
             </button>
-          ) : null}
+          ))}
           {attachedEvent ? (
             <button type="button" className="file-chip event-chip" onClick={() => setAttachedEvent(null)}>
               <CalendarDays size={14} />
@@ -4541,6 +4909,7 @@ function Composer({
           <input
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            onPaste={handlePaste}
             placeholder={editingMessage ? "Edit message" : `Message #${channel.name}`}
           />
         </div>
@@ -5394,26 +5763,45 @@ function MembersPanel({
   members: ServerMemberView[];
   onProfile: (profile: UserProfile) => void;
 }) {
+  const onlineMembers = members.filter((member) => member.isOnline && !member.bannedAt);
+  const offlineMembers = members.filter((member) => !member.isOnline || member.bannedAt);
+  const groups = [
+    { title: "Online", members: onlineMembers },
+    { title: "Offline", members: offlineMembers }
+  ];
+
   return (
     <aside className="members-panel">
-      <div className="members-title">Members</div>
-      {members.map((member) => (
-        <button
-          className={`member-row ${member.bannedAt ? "banned" : ""}`}
-          key={member.id}
-          onClick={() => onProfile(member)}
-        >
-          <Avatar
-            profile={member}
-            size="sm"
-            status={member.isOnline ? "online" : "offline"}
-            muted={Boolean(member.bannedAt)}
-          />
-          <span className="member-name">{member.displayName}</span>
-          {member.bannedAt ? <em>Banned</em> : null}
-          {member.role === "SUPER_ADMIN" ? <ShieldCheck size={14} /> : member.role === "ADMIN" ? <Shield size={14} /> : null}
-        </button>
-      ))}
+      {groups.map((group) =>
+        group.members.length > 0 ? (
+          <section className="member-group" key={group.title}>
+            <div className="members-title">
+              {group.title} - {group.members.length}
+            </div>
+            {group.members.map((member) => (
+              <button
+                className={`member-row ${member.bannedAt ? "banned" : ""}`}
+                key={member.id}
+                onClick={() => onProfile(member)}
+              >
+                <Avatar
+                  profile={member}
+                  size="sm"
+                  status={member.isOnline && !member.bannedAt ? "online" : "offline"}
+                  muted={Boolean(member.bannedAt || !member.isOnline)}
+                />
+                <span className="member-name">{member.displayName}</span>
+                {member.bannedAt ? <em>Banned</em> : null}
+                {member.role === "SUPER_ADMIN" ? (
+                  <ShieldCheck size={14} />
+                ) : member.role === "ADMIN" ? (
+                  <Shield size={14} />
+                ) : null}
+              </button>
+            ))}
+          </section>
+        ) : null
+      )}
     </aside>
   );
 }
@@ -6310,6 +6698,52 @@ function extractYouTubeUrls(content: string) {
   );
 }
 
+function hasTransferFiles(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types).includes("Files");
+}
+
+function getFilesFromDataTransfer(dataTransfer: DataTransfer) {
+  const itemFiles = Array.from(dataTransfer.items ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+
+  if (itemFiles.length > 0) {
+    return itemFiles;
+  }
+
+  return Array.from(dataTransfer.files ?? []);
+}
+
+function normalizeClipboardFile(file: File, index: number) {
+  if (file.name) {
+    return file;
+  }
+
+  const extension = fileExtensionFromMimeType(file.type);
+  return new File([file], `pasted-file-${index + 1}${extension}`, {
+    type: file.type || "application/octet-stream",
+    lastModified: file.lastModified
+  });
+}
+
+function fileExtensionFromMimeType(mimeType: string) {
+  const extensions: Record<string, string> = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/ogg": ".ogg",
+    "audio/webm": ".webm",
+    "application/pdf": ".pdf",
+    "text/plain": ".txt"
+  };
+
+  return extensions[mimeType] ?? "";
+}
+
 function isAudioAttachment(attachment: MessageView["attachments"][number]) {
   return attachment.mimeType.startsWith("audio/");
 }
@@ -6445,27 +6879,47 @@ function isParticipantAudioMuted(participant: Participant) {
   return publications.every((publication) => publication.isMuted);
 }
 
-function getParticipantScreenShareStatus(participant: Participant): ScreenShareView["status"] | null {
+function getVideoStreamId(userId: string, kind: ScreenShareView["kind"]) {
+  return `${userId}:${kind}`;
+}
+
+function getPreferredVideoStream(streams: ScreenShareView[], userId: string) {
+  return (
+    streams.find((stream) => stream.userId === userId && stream.kind === "screen") ??
+    streams.find((stream) => stream.userId === userId && stream.kind === "camera") ??
+    null
+  );
+}
+
+function getParticipantVideoStatus(participant: Participant, source: Track.Source): ScreenShareView["status"] | null {
   const publications = Array.from(participant.videoTrackPublications.values()) as Array<{
     source: Track.Source;
     track?: LocalTrack | RemoteTrack | null;
     isMuted?: boolean;
   }>;
-  const screenPublication = publications.find((publication) => publication.source === Track.Source.ScreenShare);
+  const publication = publications.find((candidate) => candidate.source === source);
 
-  if (!screenPublication) {
+  if (!publication) {
     return null;
   }
 
-  if (screenPublication.isMuted) {
+  if (publication.isMuted) {
     return "unavailable";
   }
 
-  return screenPublication.track ? "live" : "starting";
+  return publication.track ? "live" : "starting";
+}
+
+function getParticipantScreenShareStatus(participant: Participant): ScreenShareView["status"] | null {
+  return getParticipantVideoStatus(participant, Track.Source.ScreenShare);
 }
 
 function isParticipantScreenSharing(participant: Participant) {
   return getParticipantScreenShareStatus(participant) !== null;
+}
+
+function isParticipantCameraOn(participant: Participant) {
+  return getParticipantVideoStatus(participant, Track.Source.Camera) !== null;
 }
 
 function describeVoiceRoom(room: Room | null) {
@@ -6478,6 +6932,7 @@ function describeVoiceRoom(room: Room | null) {
     localIdentity: room.localParticipant.identity,
     localAudioMuted: isParticipantAudioMuted(room.localParticipant),
     localScreenSharing: isParticipantScreenSharing(room.localParticipant),
+    localCameraOn: isParticipantCameraOn(room.localParticipant),
     remoteParticipants: Array.from(room.remoteParticipants.values()).map(describeLiveKitParticipant)
   };
 }
@@ -6488,6 +6943,7 @@ function describeLiveKitParticipant(participant: Participant) {
     name: participant.name ?? null,
     audioMuted: isParticipantAudioMuted(participant),
     screenSharing: isParticipantScreenSharing(participant),
+    cameraOn: isParticipantCameraOn(participant),
     speaking: participant.isSpeaking,
     audioPublications: Array.from(participant.audioTrackPublications.values()).map((publication) => ({
       source: publication.source,
@@ -6522,6 +6978,8 @@ function describeVoiceState(state: VoiceStateView | null, selfId?: string) {
       serverMuted: participant.serverMuted,
       serverDeafened: participant.serverDeafened,
       screenSharing: participant.screenSharing,
+      cameraOn: participant.cameraOn,
+      viewingStreamId: participant.viewingStreamId,
       reconnecting: participant.reconnecting,
       joinedAt: participant.joinedAt,
       updatedAt: participant.updatedAt,

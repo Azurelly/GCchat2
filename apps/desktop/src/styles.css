@@ -522,7 +522,8 @@ select:focus {
 }
 
 .voice-active-pill,
-.live-badge {
+.live-badge,
+.camera-badge {
   margin-left: auto;
   border-radius: 999px;
   padding: 2px 6px;
@@ -542,6 +543,41 @@ select:focus {
   color: #fff;
   background: #ed4245;
   cursor: pointer;
+}
+
+.video-badges {
+  margin-left: auto;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.video-badges .live-badge,
+.video-badges .camera-badge {
+  margin-left: 0;
+}
+
+.camera-badge,
+.camera-live-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: #23a559;
+}
+
+.camera-badge {
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  cursor: pointer;
+}
+
+.camera-badge svg,
+.camera-live-badge svg {
+  margin-left: 0;
+  color: currentColor;
 }
 
 .voice-channel-link:disabled {
@@ -626,7 +662,7 @@ select:focus {
   opacity: 0.65;
 }
 
-.voice-participant span:not(.avatar):not(.voice-fallback-avatar) {
+.voice-participant span:not(.avatar):not(.voice-fallback-avatar):not(.video-badges):not(.live-badge):not(.camera-badge) {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -634,15 +670,16 @@ select:focus {
   white-space: nowrap;
 }
 
-.voice-participant svg {
+.voice-participant > svg {
   margin-left: auto;
   color: #949ba4;
 }
 
+.voice-participant .video-badges + svg,
 .voice-participant .live-badge + svg,
 .voice-participant .server-muted-icon + svg,
 .voice-participant .local-muted-icon + svg,
-.voice-participant svg + svg {
+.voice-participant > svg + svg {
   margin-left: 0;
 }
 
@@ -770,7 +807,7 @@ select:focus {
 
 .voice-status-tools {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -1590,26 +1627,27 @@ select:focus {
 
 .audio-attachment {
   position: relative;
-  width: min(640px, 100%);
+  width: min(432px, 100%);
   display: grid;
-  gap: 13px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 14px;
+  gap: 9px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 4px;
+  padding: 10px 12px 12px;
   color: #dbdee1;
   background: #2b2d31;
 }
 
 .audio-download-button {
   position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 34px;
-  height: 34px;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 7px;
-  color: #dbdee1;
-  background: #3f4147;
+  border-radius: 4px;
+  color: #b5bac1;
+  background: transparent;
   cursor: pointer;
   opacity: 0;
   transform: translateY(-3px);
@@ -1627,24 +1665,24 @@ select:focus {
 
 .audio-download-button:hover {
   color: #fff;
-  background: #4e5058;
+  background: #3f4147;
 }
 
 .audio-meta {
   min-width: 0;
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
-  padding-right: 46px;
+  gap: 9px;
+  padding-right: 34px;
 }
 
 .audio-file-icon {
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: 4px;
   color: #fff;
   background: #5865f2;
 }
@@ -1658,31 +1696,30 @@ select:focus {
 }
 
 .audio-meta strong {
-  color: #4ea1ff;
-  font-size: 16px;
+  color: #00a8fc;
+  font-size: 14px;
 }
 
 .audio-meta span {
   margin-top: 2px;
   color: #949ba4;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .audio-controls {
   min-width: 0;
   display: grid;
-  grid-template-columns: 36px auto minmax(120px, 1fr) 22px 92px;
+  grid-template-columns: 30px minmax(88px, 1fr) auto 20px 72px;
   align-items: center;
-  gap: 10px;
-  border-radius: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 0;
   color: #f2f3f5;
-  background: #111214;
+  background: transparent;
 }
 
 .audio-controls button {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -1692,19 +1729,20 @@ select:focus {
 }
 
 .audio-controls button:hover {
-  background: #2b2d31;
+  background: #3f4147;
 }
 
 .audio-time {
-  color: #f2f3f5;
-  font-size: 13px;
-  font-weight: 800;
+  color: #b5bac1;
+  font-size: 12px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
 .audio-progress,
 .audio-volume {
   min-width: 0;
+  height: 4px;
   padding: 0;
   accent-color: #5865f2;
   cursor: pointer;
@@ -2062,6 +2100,15 @@ select:focus {
   font-style: normal;
 }
 
+.voice-preview-card footer em.camera-live-badge,
+.stream-call-tile em.camera-live-badge,
+.stream-hover-header em.camera-live-badge {
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  background: #23a559;
+}
+
 .voice-preview-empty {
   grid-column: 1 / -1;
   align-self: center;
@@ -2081,8 +2128,11 @@ select:focus {
 .stream-control-dock {
   justify-self: center;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+  max-width: 100%;
   border-radius: 16px;
   padding: 8px;
   background: rgba(30, 31, 34, 0.98);
@@ -2202,11 +2252,63 @@ select:focus {
 }
 
 .stream-stage-body {
+  position: relative;
   min-height: 0;
   display: grid;
   place-items: center;
   padding: 18px 22px 48px;
   overflow: hidden;
+}
+
+.stream-watchers {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 6px 9px;
+  color: #dbdee1;
+  background: rgba(17, 18, 20, 0.76);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px);
+}
+
+.stream-watchers > span {
+  color: #b5bac1;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.stream-watchers > div {
+  display: flex;
+  align-items: center;
+}
+
+.stream-watchers .avatar,
+.stream-watchers em {
+  margin-left: -5px;
+  box-shadow: 0 0 0 2px rgba(17, 18, 20, 0.92);
+}
+
+.stream-watchers .avatar:first-child {
+  margin-left: 0;
+}
+
+.stream-watchers em {
+  min-width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #4e5058;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
 }
 
 .stream-stage-body video {
@@ -2353,6 +2455,13 @@ select:focus {
   font-weight: 900;
 }
 
+.stream-call-tile em.camera-live-badge {
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  background: #23a559;
+}
+
 .stream-call-tile > span {
   overflow: hidden;
   color: #f2f3f5;
@@ -2469,6 +2578,28 @@ select:focus {
   padding: 0 16px 18px;
 }
 
+.composer.dragging-files .composer-bar {
+  outline: 2px dashed #5865f2;
+  outline-offset: 4px;
+}
+
+.composer-drop-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0 16px 18px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 2px dashed #5865f2;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(43, 45, 49, 0.92);
+  font-size: 14px;
+  font-weight: 900;
+}
+
 .composer-reply-preview {
   min-width: 0;
   min-height: 34px;
@@ -2562,12 +2693,17 @@ select:focus {
   min-width: 0;
   min-height: 42px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  align-content: center;
   gap: 8px;
   overflow: hidden;
+  padding: 2px 0;
 }
 
 .composer-input input {
+  flex: 1 1 180px;
+  min-width: 140px;
   height: 42px;
   border: 0;
   background: transparent;
@@ -2577,6 +2713,7 @@ select:focus {
 
 .file-chip {
   max-width: 220px;
+  flex: 0 1 auto;
   height: 26px;
   display: inline-flex;
   align-items: center;
@@ -3473,6 +3610,10 @@ select:focus {
   min-height: 0;
   padding: 18px 8px;
   overflow-y: auto;
+}
+
+.member-group + .member-group {
+  margin-top: 18px;
 }
 
 .member-row {

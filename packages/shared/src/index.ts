@@ -180,6 +180,8 @@ export interface VoiceParticipantState {
   serverMuted: boolean;
   serverDeafened: boolean;
   screenSharing: boolean;
+  cameraOn: boolean;
+  viewingStreamId: string | null;
   reconnecting: boolean;
   joinedAt: string;
   updatedAt: string;
@@ -194,6 +196,8 @@ export interface VoiceSelfStateRequest {
   selfMuted?: boolean;
   selfDeafened?: boolean;
   screenSharing?: boolean;
+  cameraOn?: boolean;
+  viewingStreamId?: string | null;
 }
 
 export interface VoiceModerationRequest {
