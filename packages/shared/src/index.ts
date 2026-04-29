@@ -83,6 +83,12 @@ export interface MessageReactionView {
   users: UserProfile[];
 }
 
+export interface MessagePageView {
+  messages: MessageView[];
+  hasMore: boolean;
+  nextBefore: string | null;
+}
+
 export interface CalendarEventOptInView {
   user: UserProfile;
   createdAt: string;

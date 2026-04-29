@@ -14,6 +14,7 @@ import {
   type CreateCustomEmojiRequest,
   type CreateMessageRequest,
   type DeleteChannelRequest,
+  type MessagePageView,
   type MessageReactionView,
   type MessageReplyView,
   type MessageView,
@@ -491,15 +492,50 @@ export class PrismaChatRepository implements ChatRepository {
     return Boolean(channel);
   }
 
-  public async listMessages(channelId: string, limit: number): Promise<MessageView[]> {
-    const messages = await this.prisma.message.findMany({
-      where: { channelId, deletedAt: null },
-      include: messageInclude,
-      orderBy: { createdAt: "desc" },
-      take: limit
-    });
+  public async listMessages(
+    channelId: string,
+    input: { limit: number; beforeMessageId?: string | null }
+  ): Promise<MessagePageView> {
+    const beforeMessage = input.beforeMessageId
+      ? await this.prisma.message.findFirst({
+          where: {
+            id: input.beforeMessageId,
+            channelId,
+            deletedAt: null
+          },
+          select: { id: true, createdAt: true }
+        })
+      : null;
 
-    return messages.reverse().map(mapMessage);
+    if (input.beforeMessageId && !beforeMessage) {
+      return { messages: [], hasMore: false, nextBefore: null };
+    }
+
+    const messages = await this.prisma.message.findMany({
+      where: {
+        channelId,
+        deletedAt: null,
+        ...(beforeMessage
+          ? {
+              OR: [
+                { createdAt: { lt: beforeMessage.createdAt } },
+                { createdAt: beforeMessage.createdAt, id: { lt: beforeMessage.id } }
+              ]
+            }
+          : {})
+      },
+      include: messageInclude,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: input.limit + 1
+    });
+    const hasMore = messages.length > input.limit;
+    const pageMessages = messages.slice(0, input.limit).reverse().map(mapMessage);
+
+    return {
+      messages: pageMessages,
+      hasMore,
+      nextBefore: pageMessages[0]?.id ?? null
+    };
   }
 
   public async createMessage(

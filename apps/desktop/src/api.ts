@@ -10,6 +10,7 @@ import type {
   CreateCustomEmojiRequest,
   CreateMessageRequest,
   DeleteChannelRequest,
+  MessagePageView,
   MessageView,
   RestoreAuditLogResponse,
   SetCalendarEventOptInRequest,
@@ -71,8 +72,21 @@ export class ApiClient {
     return this.request<UserProfile>(`/users/${userId}/profile`);
   }
 
-  public getMessages(channelId: string) {
-    return this.request<MessageView[]>(`/channels/${channelId}/messages`);
+  public getMessages(channelId: string, options: { before?: string | null; limit?: number } = {}) {
+    const params = new URLSearchParams();
+    params.set("page", "1");
+
+    if (options.before) {
+      params.set("before", options.before);
+    }
+
+    if (options.limit) {
+      params.set("limit", String(options.limit));
+    }
+
+    const query = params.toString();
+
+    return this.request<MessagePageView>(`/channels/${channelId}/messages${query ? `?${query}` : ""}`);
   }
 
   public createChannel(input: CreateChannelRequest) {

@@ -300,7 +300,17 @@ export function createApp({ env, repo, storage, realtime }: AppDependencies) {
         throw new HttpError(403, "You cannot access this channel");
       }
 
-      res.json(await repo.listMessages(channelId, parseMessageLimit(req.query.limit)));
+      const page = await repo.listMessages(channelId, {
+        limit: parseMessageLimit(req.query.limit),
+        beforeMessageId: parseMessageCursor(req.query.before)
+      });
+
+      if (req.query.page === "1" || typeof req.query.before === "string") {
+        res.json(page);
+        return;
+      }
+
+      res.json(page.messages);
     })
   );
 
@@ -617,6 +627,10 @@ function parseMessageLimit(limit: unknown) {
   }
 
   return Math.min(Math.max(Math.trunc(parsed), 1), 100);
+}
+
+function parseMessageCursor(before: unknown) {
+  return typeof before === "string" && before.trim().length > 0 ? before.trim() : null;
 }
 
 function requiredParam(req: Request, name: string) {

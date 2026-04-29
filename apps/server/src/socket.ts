@@ -319,6 +319,16 @@ export function attachRealtime(
           throw new HttpError(400, "You cannot moderate your own voice state");
         }
 
+        const target = await repo.getProfile(payload.targetUserId);
+
+        if (!target) {
+          throw new HttpError(404, "User not found");
+        }
+
+        if (actor.role === "ADMIN" && target.role !== "USER") {
+          throw new HttpError(403, "Admins can only moderate regular users in voice");
+        }
+
         const now = new Date().toISOString();
         const currentModeration = voiceModeration.get(payload.targetUserId) ?? {
           serverMuted: false,

@@ -405,12 +405,28 @@ export class InMemoryChatRepository implements ChatRepository {
     return Boolean(channel) && (await this.userHasServerAccess(userId, this.server.id));
   }
 
-  public async listMessages(channelId: string, limit: number): Promise<MessageView[]> {
-    return this.messages
+  public async listMessages(
+    channelId: string,
+    input: { limit: number; beforeMessageId?: string | null }
+  ) {
+    const sorted = this.messages
       .filter((message) => message.channelId === channelId && !message.deletedAt)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .slice(-limit)
-      .map((message) => this.mapMessage(message));
+      .sort((a, b) => {
+        const time = b.createdAt.getTime() - a.createdAt.getTime();
+        return time === 0 ? b.id.localeCompare(a.id) : time;
+      });
+    const beforeIndex = input.beforeMessageId
+      ? sorted.findIndex((message) => message.id === input.beforeMessageId)
+      : -1;
+    const source = beforeIndex >= 0 ? sorted.slice(beforeIndex + 1) : sorted;
+    const page = source.slice(0, input.limit + 1);
+    const messages = page.slice(0, input.limit).reverse().map((message) => this.mapMessage(message));
+
+    return {
+      messages,
+      hasMore: page.length > input.limit,
+      nextBefore: messages[0]?.id ?? null
+    };
   }
 
   public async createMessage(

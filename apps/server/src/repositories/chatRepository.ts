@@ -9,6 +9,7 @@ import type {
   CreateCustomEmojiRequest,
   CreateMessageRequest,
   DeleteChannelRequest,
+  MessagePageView,
   MessageView,
   RestoreAuditLogResponse,
   SetCalendarEventOptInRequest,
@@ -67,7 +68,10 @@ export interface ChatRepository {
   ): Promise<UserProfile>;
   userHasServerAccess(userId: string, serverId: string): Promise<boolean>;
   userHasChannelAccess(userId: string, channelId: string): Promise<boolean>;
-  listMessages(channelId: string, limit: number): Promise<MessageView[]>;
+  listMessages(
+    channelId: string,
+    input: { limit: number; beforeMessageId?: string | null }
+  ): Promise<MessagePageView>;
   createMessage(
     input: { channelId: string; authorId: string } & CreateMessageRequest
   ): Promise<MessageView>;

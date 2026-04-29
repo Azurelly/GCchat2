@@ -1068,6 +1068,17 @@ select:focus {
   padding: 18px 0 8px;
 }
 
+.message-history-loader {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #949ba4;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .message-list.empty {
   display: grid;
   place-items: end start;
@@ -1534,6 +1545,200 @@ select:focus {
   padding: 12px;
 }
 
+.voice-preview-stage {
+  grid-row: 2 / 4;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 18px;
+  overflow: hidden;
+  padding: 22px;
+  background: #111214;
+}
+
+.voice-preview-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-content: center;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.voice-preview-card {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.voice-preview-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1e1f22;
+}
+
+.voice-preview-card.streaming .voice-preview-frame {
+  border-color: #23a559;
+}
+
+.voice-preview-frame video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.voice-preview-stream-placeholder,
+.voice-preview-empty {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  color: #b5bac1;
+  text-align: center;
+}
+
+.voice-preview-stream-placeholder span {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.voice-preview-fallback {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #5865f2;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.watch-stream-button {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 10px 14px;
+  color: #fff;
+  background: rgba(43, 45, 49, 0.92);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  font-weight: 900;
+  transform: translate(-50%, -50%);
+}
+
+.watch-stream-button:hover {
+  background: #23a559;
+}
+
+.voice-preview-card footer {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #dbdee1;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.voice-preview-card footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-preview-card footer em {
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: #fff;
+  background: #ed4245;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.voice-preview-empty {
+  grid-column: 1 / -1;
+  align-self: center;
+  justify-self: center;
+}
+
+.voice-preview-empty h2,
+.voice-preview-empty p {
+  margin: 0;
+}
+
+.voice-preview-empty h2 {
+  color: #fff;
+}
+
+.voice-preview-controls,
+.stream-control-dock {
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(30, 31, 34, 0.94);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+}
+
+.voice-preview-controls button,
+.stream-control-dock button {
+  min-width: 92px;
+  height: 42px;
+  display: grid;
+  grid-auto-flow: column;
+  place-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #dbdee1;
+  background: #2b2d31;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.voice-preview-controls button:hover,
+.stream-control-dock button:hover {
+  color: #fff;
+  background: #3f4147;
+}
+
+.voice-preview-controls button.active,
+.stream-control-dock button.active {
+  color: #fff;
+  background: #5865f2;
+}
+
+.stream-control-dock button.danger {
+  color: #ffb4b6;
+}
+
+.stream-control-dock button.danger:hover {
+  color: #fff;
+  background: #da373c;
+}
+
+.voice-preview-controls .join-call-button {
+  min-width: 220px;
+  color: #fff;
+  background: #23a559;
+}
+
 .screen-share-stage {
   grid-row: 2 / 4;
   min-width: 0;
@@ -1643,6 +1848,12 @@ select:focus {
   border-top: 1px solid rgba(0, 0, 0, 0.55);
 }
 
+.discord-stream-footer {
+  min-height: 188px;
+  grid-template-rows: auto auto auto;
+  padding: 12px 18px 16px;
+}
+
 .stream-stage-footer > span {
   color: #23a559;
   font-size: 12px;
@@ -1685,6 +1896,65 @@ select:focus {
   white-space: nowrap;
   text-align: left;
   font-weight: 800;
+}
+
+.stream-call-strip {
+  max-width: 100%;
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.stream-call-tile {
+  width: 180px;
+  display: grid;
+  gap: 6px;
+  color: #dbdee1;
+  cursor: pointer;
+  text-align: left;
+}
+
+.stream-call-tile > div {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #2b2d31;
+}
+
+.stream-call-tile.active > div {
+  border-color: #5865f2;
+}
+
+.stream-call-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.stream-call-tile em {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: #fff;
+  background: #ed4245;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.stream-call-tile > span {
+  overflow: hidden;
+  color: #f2f3f5;
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .screen-source-backdrop {

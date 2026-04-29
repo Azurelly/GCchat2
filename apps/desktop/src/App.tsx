@@ -179,6 +179,11 @@ interface ScreenShareView {
   status: "starting" | "live" | "ended" | "unavailable";
 }
 
+interface MessageHistoryState {
+  hasMore: boolean;
+  loadingOlder: boolean;
+}
+
 interface VoiceDiagnosticEntry {
   id: number;
   at: string;
@@ -192,7 +197,9 @@ export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [activeFeature, setActiveFeature] = useState<ActiveFeature>("chat");
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [voiceViewOpen, setVoiceViewOpen] = useState(false);
   const [messagesByChannel, setMessagesByChannel] = useState<Record<string, MessageView[]>>({});
+  const [messageHistoryState, setMessageHistoryState] = useState<Record<string, MessageHistoryState>>({});
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventView[]>([]);
   const [calendarEventsStatus, setCalendarEventsStatus] = useState<CalendarEventsStatus>("idle");
   const [customEmojis, setCustomEmojis] = useState<CustomEmojiView[]>([]);
@@ -262,6 +269,9 @@ export function App() {
     );
   }, [activeChannelId, session]);
   const messages = activeChannel ? messagesByChannel[activeChannel.id] ?? [] : [];
+  const activeMessageHistory = activeChannel
+    ? messageHistoryState[activeChannel.id] ?? { hasMore: false, loadingOlder: false }
+    : { hasMore: false, loadingOlder: false };
 
   useEffect(() => {
     if (session && activeFeature === "emojis" && !hasAtLeastRole(session.user.role, "ADMIN")) {
@@ -1314,6 +1324,7 @@ export function App() {
     setBanned(true);
     setSession(null);
     setMessagesByChannel({});
+    setMessageHistoryState({});
     setCalendarEvents([]);
     setCalendarEventsStatus("idle");
     setCustomEmojis([]);
@@ -1329,6 +1340,7 @@ export function App() {
       socketRef.current = null;
       setSocket(null);
       setMessagesByChannel({});
+      setMessageHistoryState({});
       setCalendarEvents([]);
       setCalendarEventsStatus("idle");
       setCustomEmojis([]);
@@ -1549,11 +1561,15 @@ export function App() {
 
     api
       .getMessages(activeChannel.id)
-      .then((history) => {
+      .then((page) => {
         if (active) {
           setMessagesByChannel((current) => ({
             ...current,
-            [activeChannel.id]: history.map(normalizeMessage)
+            [activeChannel.id]: page.messages.map(normalizeMessage)
+          }));
+          setMessageHistoryState((current) => ({
+            ...current,
+            [activeChannel.id]: { hasMore: page.hasMore, loadingOlder: false }
           }));
         }
       })
@@ -1567,6 +1583,42 @@ export function App() {
   useEffect(() => {
     setReplyToMessage(null);
   }, [activeChannel?.id]);
+
+  const handleLoadOlderMessages = async (channelId: string) => {
+    const state = messageHistoryState[channelId];
+    const currentMessages = messagesByChannel[channelId] ?? [];
+    const before = currentMessages[0]?.id;
+
+    if (!before || state?.loadingOlder || state?.hasMore === false) {
+      return;
+    }
+
+    setMessageHistoryState((current) => ({
+      ...current,
+      [channelId]: { hasMore: current[channelId]?.hasMore ?? true, loadingOlder: true }
+    }));
+
+    try {
+      const page = await api.getMessages(channelId, { before });
+      const existingIds = new Set((messagesByChannel[channelId] ?? []).map((message) => message.id));
+      const olderMessages = page.messages.map(normalizeMessage).filter((message) => !existingIds.has(message.id));
+
+      setMessagesByChannel((current) => ({
+        ...current,
+        [channelId]: [...olderMessages, ...(current[channelId] ?? [])]
+      }));
+      setMessageHistoryState((current) => ({
+        ...current,
+        [channelId]: { hasMore: page.hasMore, loadingOlder: false }
+      }));
+    } catch (requestError) {
+      setMessageHistoryState((current) => ({
+        ...current,
+        [channelId]: { hasMore: current[channelId]?.hasMore ?? true, loadingOlder: false }
+      }));
+      setError(getMessage(requestError));
+    }
+  };
 
   const handleAuth = (auth: AuthResponse) => {
     localStorage.setItem(tokenStorageKey, auth.token);
@@ -1585,6 +1637,7 @@ export function App() {
     setSession(null);
     setActiveChannelId(null);
     setMessagesByChannel({});
+    setMessageHistoryState({});
     setCustomEmojis([]);
     setBanned(false);
     setSelectedProfile(null);
@@ -1615,6 +1668,7 @@ export function App() {
           }
         : current
     );
+    setVoiceViewOpen(false);
     setActiveChannelId(channel.id);
   };
 
@@ -1635,6 +1689,7 @@ export function App() {
     setActiveChannelId((current) =>
       channels.some((channel) => channel.id === current) ? current : channels[0]?.id ?? null
     );
+    setVoiceViewOpen(false);
   };
 
   const handleManagedProfile = (profile: UserProfile) => {
@@ -1667,10 +1722,14 @@ export function App() {
       setMessagesByChannel((current) => replaceMessageInChannel(current, message.id, updated));
     } catch (requestError) {
       setError(getMessage(requestError));
-      void api.getMessages(message.channelId).then((history) => {
+      void api.getMessages(message.channelId).then((page) => {
         setMessagesByChannel((current) => ({
           ...current,
-          [message.channelId]: history.map(normalizeMessage)
+          [message.channelId]: page.messages.map(normalizeMessage)
+        }));
+        setMessageHistoryState((current) => ({
+          ...current,
+          [message.channelId]: { hasMore: page.hasMore, loadingOlder: false }
         }));
       });
     }
@@ -1795,7 +1854,17 @@ export function App() {
         <ChannelSidebar
           session={session}
           activeChannelId={currentChannel.id}
-          onChannelSelect={setActiveChannelId}
+          activeVoiceView={voiceViewOpen}
+          onChannelSelect={(channelId) => {
+            setVoiceViewOpen(false);
+            setSelectedStreamUserId(null);
+            setActiveChannelId(channelId);
+          }}
+          onVoiceChannelSelect={() => {
+            setActiveFeature("chat");
+            setVoiceViewOpen(true);
+            setSelectedStreamUserId(null);
+          }}
           onChannelCreated={handleChannelCreated}
           onDeleteChannel={setDeleteChannel}
           onProfile={() => setSelectedProfile(session.user)}
@@ -1845,8 +1914,8 @@ export function App() {
         <main className="chat-panel">
           <header className="chat-header">
             <div className="chat-title">
-              <Hash size={22} />
-              <span>{currentChannel.name}</span>
+              {voiceViewOpen ? <Volume2 size={22} /> : <Hash size={22} />}
+              <span>{voiceViewOpen ? "General Voice" : currentChannel.name}</span>
             </div>
           </header>
 
@@ -1863,19 +1932,38 @@ export function App() {
             <ScreenShareStage
               stream={selectedStream}
               allStreams={screenShares}
+              participants={voiceParticipants}
               voiceStatus={voiceStatus}
               muted={voiceMuted}
               deafened={voiceDeafened}
+              sharing={voiceSharing}
               onSelectStream={setSelectedStreamUserId}
               onExit={() => setSelectedStreamUserId(null)}
               onToggleMute={() => void handleVoiceMuteToggle()}
               onToggleDeafen={() => void handleVoiceDeafenToggle()}
+              onToggleScreenShare={() => void handleScreenShareToggle()}
               onDisconnect={disconnectVoice}
+            />
+          ) : voiceViewOpen ? (
+            <VoicePreviewStage
+              participants={voiceParticipants}
+              screenShares={screenShares}
+              status={voiceStatus}
+              muted={voiceMuted}
+              deafened={voiceDeafened}
+              sharing={voiceSharing}
+              onJoin={() => void handleVoiceJoin()}
+              onToggleMute={() => void handleVoiceMuteToggle()}
+              onToggleDeafen={() => void handleVoiceDeafenToggle()}
+              onToggleScreenShare={() => void handleScreenShareToggle()}
+              onWatchStream={setSelectedStreamUserId}
             />
           ) : (
             <>
               <MessageList
                 messages={messages}
+                hasMore={activeMessageHistory.hasMore}
+                loadingOlder={activeMessageHistory.loadingOlder}
                 members={session.members}
                 calendarEvents={calendarEvents}
                 calendarEventsStatus={calendarEventsStatus}
@@ -1888,6 +1976,7 @@ export function App() {
                 onReact={(message, emoji) => void handleReaction(message, emoji)}
                 onEventUpdated={handleCalendarEventUpdated}
                 onOpenCalendarEvent={handleOpenCalendarEvent}
+                onLoadOlder={() => handleLoadOlderMessages(currentChannel.id)}
                 onError={setError}
               />
               <Composer
@@ -2188,7 +2277,9 @@ function AuthScreen({
 function ChannelSidebar({
   session,
   activeChannelId,
+  activeVoiceView,
   onChannelSelect,
+  onVoiceChannelSelect,
   onChannelCreated,
   onDeleteChannel,
   onProfile,
@@ -2216,7 +2307,9 @@ function ChannelSidebar({
 }: {
   session: Session;
   activeChannelId: string;
+  activeVoiceView: boolean;
   onChannelSelect: (channelId: string) => void;
+  onVoiceChannelSelect: () => void;
   onChannelCreated: (channel: ChannelSummary) => void;
   onDeleteChannel: (channel: ChannelSummary) => void;
   onProfile: () => void;
@@ -2311,7 +2404,7 @@ function ChannelSidebar({
           {session.channels.map((channel) => (
             <div className={`channel-row ${canDeleteChannel ? "can-delete" : ""}`} key={channel.id}>
               <button
-                className={`channel-link ${channel.id === activeChannelId ? "active" : ""}`}
+                className={`channel-link ${!activeVoiceView && channel.id === activeChannelId ? "active" : ""}`}
                 onClick={() => onChannelSelect(channel.id)}
               >
                 <Hash size={18} />
@@ -2339,6 +2432,8 @@ function ChannelSidebar({
           sharing={voiceSharing}
           participants={voiceParticipants}
           screenShares={screenShares}
+          selected={activeVoiceView}
+          onOpen={onVoiceChannelSelect}
           onJoin={onVoiceJoin}
           onLeave={onVoiceLeave}
           onToggleMute={onVoiceMuteToggle}
@@ -2395,6 +2490,8 @@ function VoiceChannelSection({
   sharing,
   participants,
   screenShares,
+  selected,
+  onOpen,
   onJoin,
   onLeave,
   onToggleMute,
@@ -2413,6 +2510,8 @@ function VoiceChannelSection({
   sharing: boolean;
   participants: VoiceParticipantView[];
   screenShares: ScreenShareView[];
+  selected: boolean;
+  onOpen: () => void;
   onJoin: () => void;
   onLeave: () => void;
   onToggleMute: () => void;
@@ -2487,8 +2586,8 @@ function VoiceChannelSection({
     <section className="voice-channel-section">
       <div className="channel-group-title voice-title">Voice Channels</div>
       <button
-        className={`channel-link voice-channel-link ${connected ? "active" : ""}`}
-        onClick={connected ? undefined : onJoin}
+        className={`channel-link voice-channel-link ${selected ? "active" : ""}`}
+        onClick={onOpen}
         disabled={connecting}
         type="button"
       >
@@ -2590,6 +2689,7 @@ function VoiceChannelSection({
             <VoiceUserContextMenu
               state={contextMenu}
               canModerate={canModerate}
+              currentUser={currentUser}
               onClose={() => setContextMenu(null)}
               onProfile={(profile) => {
                 onProfile(profile);
@@ -2826,6 +2926,7 @@ function VoiceDiagnosticsModal({
 function VoiceUserContextMenu({
   state,
   canModerate,
+  currentUser,
   onClose,
   onProfile,
   onSetVolume,
@@ -2834,6 +2935,7 @@ function VoiceUserContextMenu({
 }: {
   state: { participant: VoiceParticipantView; x: number; y: number };
   canModerate: boolean;
+  currentUser: UserProfile;
   onClose: () => void;
   onProfile: (profile: UserProfile) => void;
   onSetVolume: (userId: string, volume: number) => void;
@@ -2841,7 +2943,8 @@ function VoiceUserContextMenu({
   onModerate: (payload: VoiceModerationRequest) => void;
 }) {
   const participant = state.participant;
-  const canModerateParticipant = canModerate && !participant.isLocal;
+  const canModerateParticipant =
+    canModerate && !participant.isLocal && canModerateVoiceParticipant(currentUser, participant.profile);
   const [localVolume, setLocalVolume] = useState(() => normalizeVoiceVolume(participant.volume));
 
   useEffect(() => {
@@ -2971,27 +3074,143 @@ function StreamHoverPreview({
   );
 }
 
+function VoicePreviewStage({
+  participants,
+  screenShares,
+  status,
+  muted,
+  deafened,
+  sharing,
+  onJoin,
+  onToggleMute,
+  onToggleDeafen,
+  onToggleScreenShare,
+  onWatchStream
+}: {
+  participants: VoiceParticipantView[];
+  screenShares: ScreenShareView[];
+  status: VoiceStatus;
+  muted: boolean;
+  deafened: boolean;
+  sharing: boolean;
+  onJoin: () => void;
+  onToggleMute: () => void;
+  onToggleDeafen: () => void;
+  onToggleScreenShare: () => void;
+  onWatchStream: (userId: string) => void;
+}) {
+  const connected = status === "connected";
+  const connecting = status === "connecting";
+
+  return (
+    <section className="voice-preview-stage">
+      <div className="voice-preview-grid">
+        {participants.length > 0 ? (
+          participants.map((participant) => {
+            const stream = screenShares.find((share) => share.userId === participant.userId) ?? null;
+            const sharingScreen = participant.isScreenSharing || Boolean(stream);
+
+            return (
+              <article className={`voice-preview-card ${sharingScreen ? "streaming" : ""}`} key={participant.userId}>
+                <div className="voice-preview-frame">
+                  {stream?.track && stream.status === "live" ? (
+                    <TrackVideo track={stream.track} muted />
+                  ) : sharingScreen ? (
+                    <div className="voice-preview-stream-placeholder">
+                      <MonitorUp size={30} />
+                      <span>{stream?.status === "unavailable" ? "Stream unavailable" : "Starting stream..."}</span>
+                    </div>
+                  ) : participant.profile ? (
+                    <Avatar profile={participant.profile} size="xl" />
+                  ) : (
+                    <span className="voice-preview-fallback">{participant.name.slice(0, 2).toUpperCase()}</span>
+                  )}
+                  {sharingScreen ? (
+                    <button
+                      type="button"
+                      className="watch-stream-button"
+                      onClick={() => (stream ? onWatchStream(participant.userId) : onJoin())}
+                    >
+                      <MonitorUp size={16} />
+                      {stream ? "Watch Stream" : "Join to Watch"}
+                    </button>
+                  ) : null}
+                </div>
+                <footer>
+                  <span>{participant.isLocal ? `${participant.name} (you)` : participant.name}</span>
+                  {participant.isScreenSharing ? <em>LIVE</em> : null}
+                  {participant.isServerMuted ? (
+                    <MicOff className="server-muted-icon" size={15} />
+                  ) : participant.isMuted ? (
+                    <MicOff size={15} />
+                  ) : null}
+                  {participant.isDeafened ? <VolumeX size={15} /> : null}
+                </footer>
+              </article>
+            );
+          })
+        ) : (
+          <div className="voice-preview-empty">
+            <Volume2 size={36} />
+            <h2>No one is in General Voice</h2>
+            <p>Join the channel to start a call.</p>
+          </div>
+        )}
+      </div>
+      <div className="voice-preview-controls">
+        {connected ? (
+          <>
+            <button type="button" className={muted ? "active" : ""} onClick={onToggleMute}>
+              {muted ? <MicOff size={18} /> : <Mic size={18} />}
+              <span>{muted ? "Unmute" : "Mute"}</span>
+            </button>
+            <button type="button" className={deafened ? "active" : ""} onClick={onToggleDeafen}>
+              {deafened ? <VolumeX size={18} /> : <Volume2 size={18} />}
+              <span>{deafened ? "Undeafen" : "Deafen"}</span>
+            </button>
+            <button type="button" className={sharing ? "active" : ""} onClick={onToggleScreenShare}>
+              {sharing ? <MonitorX size={18} /> : <MonitorUp size={18} />}
+              <span>{sharing ? "Stop Sharing" : "Share Screen"}</span>
+            </button>
+          </>
+        ) : (
+          <button type="button" className="join-call-button" onClick={onJoin} disabled={connecting}>
+            {connecting ? <Loader2 className="spin" size={18} /> : <PhoneCall size={18} />}
+            <span>{connecting ? "Connecting" : "Join Voice"}</span>
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ScreenShareStage({
   stream,
   allStreams,
+  participants,
   voiceStatus,
   muted,
   deafened,
+  sharing,
   onSelectStream,
   onExit,
   onToggleMute,
   onToggleDeafen,
+  onToggleScreenShare,
   onDisconnect
 }: {
   stream: ScreenShareView;
   allStreams: ScreenShareView[];
+  participants: VoiceParticipantView[];
   voiceStatus: VoiceStatus;
   muted: boolean;
   deafened: boolean;
+  sharing: boolean;
   onSelectStream: (userId: string) => void;
   onExit: () => void;
   onToggleMute: () => void;
   onToggleDeafen: () => void;
+  onToggleScreenShare: () => void;
   onDisconnect: () => void;
 }) {
   useEffect(() => {
@@ -3047,26 +3266,58 @@ function ScreenShareStage({
           </div>
         )}
       </div>
-      <footer className="stream-stage-footer">
+      <footer className="stream-stage-footer discord-stream-footer">
+        <div className="stream-call-strip">
+          {participants.map((participant) => {
+            const participantStream = liveStreams.find((candidate) => candidate.userId === participant.userId) ?? null;
+
+            return (
+              <button
+                className={`stream-call-tile ${participant.userId === stream.userId ? "active" : ""}`}
+                key={participant.userId}
+                type="button"
+                onClick={() => participantStream && onSelectStream(participant.userId)}
+              >
+                <div>
+                  {participantStream?.track ? (
+                    <TrackVideo track={participantStream.track} muted />
+                  ) : participant.profile ? (
+                    <Avatar profile={participant.profile} size="lg" />
+                  ) : (
+                    <span className="voice-preview-fallback">{participant.name.slice(0, 2).toUpperCase()}</span>
+                  )}
+                  {participantStream ? <em>LIVE</em> : null}
+                </div>
+                <span>{participant.isLocal ? "You" : participant.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="stream-control-dock">
+          <button type="button" onClick={onExit}>
+            <MonitorX size={18} />
+            <span>Stop Watching</span>
+          </button>
+          <button type="button" className={muted ? "active" : ""} onClick={onToggleMute}>
+            {muted ? <MicOff size={18} /> : <Mic size={18} />}
+            <span>{muted ? "Unmute" : "Mute"}</span>
+          </button>
+          <button type="button" className={sharing ? "active" : ""} onClick={onToggleScreenShare}>
+            {sharing ? <MonitorX size={18} /> : <MonitorUp size={18} />}
+            <span>{sharing ? "Stop Sharing" : "Share Screen"}</span>
+          </button>
+          <button type="button" className={deafened ? "active" : ""} onClick={onToggleDeafen}>
+            {deafened ? <VolumeX size={18} /> : <Volume2 size={18} />}
+            <span>{deafened ? "Undeafen" : "Deafen"}</span>
+          </button>
+          <button type="button" className="danger" onClick={onDisconnect}>
+            <PhoneOff size={18} />
+            <span>Disconnect</span>
+          </button>
+        </div>
         <span className={voiceStatus === "reconnecting" ? "reconnecting" : ""}>
           {voiceStatus === "reconnecting" ? "Reconnecting..." : "Voice connected"}
         </span>
-        {liveStreams.length > 1 ? (
-          <div className="stream-switcher">
-            {liveStreams.map((candidate) => (
-              <button
-                className={candidate.userId === stream.userId ? "active" : ""}
-                key={candidate.userId}
-                type="button"
-                onClick={() => onSelectStream(candidate.userId)}
-              >
-                {candidate.profile ? <Avatar profile={candidate.profile} size="xs" /> : null}
-                <span>{candidate.isLocal ? "You" : candidate.name}</span>
-                <em>LIVE</em>
-              </button>
-            ))}
-          </div>
-        ) : null}
       </footer>
     </section>
   );
@@ -3136,6 +3387,8 @@ function ScreenSourcePicker({
 
 function MessageList({
   messages,
+  hasMore,
+  loadingOlder,
   members,
   calendarEvents,
   calendarEventsStatus,
@@ -3148,9 +3401,12 @@ function MessageList({
   onReact,
   onEventUpdated,
   onOpenCalendarEvent,
+  onLoadOlder,
   onError
 }: {
   messages: MessageView[];
+  hasMore: boolean;
+  loadingOlder: boolean;
   members: ServerMemberView[];
   calendarEvents: CalendarEventView[];
   calendarEventsStatus: CalendarEventsStatus;
@@ -3163,10 +3419,14 @@ function MessageList({
   onReact: (message: MessageView, emoji: string) => void;
   onEventUpdated: (event: CalendarEventView) => void;
   onOpenCalendarEvent: (eventId: string) => void;
+  onLoadOlder: () => Promise<void>;
   onError: (error: string | null) => void;
 }) {
+  const listRef = useRef<HTMLElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef(new Map<string, HTMLElement>());
+  const loadingOlderRef = useRef(false);
+  const previousMessageEdgeRef = useRef<{ count: number; lastId: string | null }>({ count: 0, lastId: null });
   const [contextMenu, setContextMenu] = useState<{
     message: MessageView;
     x: number;
@@ -3175,8 +3435,52 @@ function MessageList({
   } | null>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length]);
+    const previous = previousMessageEdgeRef.current;
+    const lastId = messages[messages.length - 1]?.id ?? null;
+    const list = listRef.current;
+    const nearBottom = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 160;
+
+    if (messages.length > 0 && (previous.count === 0 || (previous.lastId !== lastId && nearBottom))) {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    }
+
+    previousMessageEdgeRef.current = { count: messages.length, lastId };
+  }, [messages]);
+
+  const loadOlder = async () => {
+    const list = listRef.current;
+
+    if (!list || !hasMore || loadingOlder || loadingOlderRef.current) {
+      return;
+    }
+
+    loadingOlderRef.current = true;
+    const previousHeight = list.scrollHeight;
+    const previousTop = list.scrollTop;
+
+    try {
+      await onLoadOlder();
+      window.requestAnimationFrame(() => {
+        const currentList = listRef.current;
+
+        if (currentList) {
+          currentList.scrollTop = currentList.scrollHeight - previousHeight + previousTop;
+        }
+      });
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  };
+
+  const handleScroll = () => {
+    const list = listRef.current;
+
+    if (!list || list.scrollTop > 120) {
+      return;
+    }
+
+    void loadOlder();
+  };
 
   const scrollToMessage = (messageId: string) => {
     const element = messageRefs.current.get(messageId);
@@ -3213,7 +3517,7 @@ function MessageList({
 
   if (messages.length === 0) {
     return (
-      <section className="message-list empty">
+      <section className="message-list empty" ref={listRef}>
         <div className="empty-state">
           <Hash size={34} />
           <h2>general</h2>
@@ -3223,7 +3527,13 @@ function MessageList({
   }
 
   return (
-    <section className="message-list">
+    <section className="message-list" ref={listRef} onScroll={handleScroll}>
+      {hasMore || loadingOlder ? (
+        <div className="message-history-loader">
+          {loadingOlder ? <Loader2 className="spin" size={16} /> : null}
+          <span>{loadingOlder ? "Loading older messages..." : "Scroll up to load older messages"}</span>
+        </div>
+      ) : null}
       {messages.map((message, index) => {
         const previous = messages[index - 1] ?? null;
         const compact = shouldCompactMessage(previous, message);
@@ -5682,6 +5992,18 @@ function hasAtLeastRole(role: UserRole, minimum: "ADMIN" | "SUPER_ADMIN") {
   };
 
   return rank[role] >= rank[minimum];
+}
+
+function canModerateVoiceParticipant(actor: UserProfile, target: UserProfile | null) {
+  if (!target || actor.id === target.id) {
+    return false;
+  }
+
+  if (actor.role === "SUPER_ADMIN") {
+    return true;
+  }
+
+  return actor.role === "ADMIN" && target.role === "USER";
 }
 
 function canDeleteCalendarEvent(event: CalendarEventView, user: UserProfile) {
