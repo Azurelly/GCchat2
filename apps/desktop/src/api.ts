@@ -72,7 +72,7 @@ export class ApiClient {
     return this.request<UserProfile>(`/users/${userId}/profile`);
   }
 
-  public getMessages(channelId: string, options: { before?: string | null; limit?: number } = {}) {
+  public async getMessages(channelId: string, options: { before?: string | null; limit?: number } = {}) {
     const params = new URLSearchParams();
     params.set("page", "1");
 
@@ -86,7 +86,19 @@ export class ApiClient {
 
     const query = params.toString();
 
-    return this.request<MessagePageView>(`/channels/${channelId}/messages${query ? `?${query}` : ""}`);
+    const response = await this.request<MessagePageView | MessageView[]>(
+      `/channels/${channelId}/messages${query ? `?${query}` : ""}`
+    );
+
+    if (Array.isArray(response)) {
+      return {
+        messages: response,
+        hasMore: response.length >= (options.limit ?? 50),
+        nextBefore: response[0]?.id ?? null
+      };
+    }
+
+    return response;
   }
 
   public createChannel(input: CreateChannelRequest) {
